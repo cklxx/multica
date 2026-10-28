@@ -17,7 +17,10 @@ async function visibleIssueTitles(page: Page, titles: string[]) {
 
 async function shot(page: Page, name: string) {
   const dir = process.env.SHOTS_DIR;
-  if (dir) await page.screenshot({ path: `${dir}/${name}.png` });
+  if (!dir) return;
+  // Let menus and tooltips finish their enter/exit transitions.
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `${dir}/${name}.png` });
 }
 
 async function closeMenus(page: Page) {
@@ -119,6 +122,7 @@ test.describe("Issue filter: search, due date, advanced", () => {
     await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
     await expect(page.getByRole("button", { name: "Advanced filter" })).toBeVisible();
+    await page.mouse.move(600, 400);
     await shot(page, "04-advanced-closed");
 
     // Delete the group: one overdue rule is a simple filter again.
