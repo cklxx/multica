@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createStore } from "zustand/vanilla";
 import { viewStoreSlice, type IssueViewState } from "../issues/stores/view-store";
-import { isIssueViewModified, issueViewSeedDefinition } from "./definition";
+import {
+  isIssueViewModified,
+  issueViewDefinitionFromState,
+  issueViewSeedDefinition,
+  modifiedFilterDimensions,
+} from "./definition";
 
 function liveStateFor(view: { query: Record<string, unknown>; display: Record<string, unknown> }) {
   const store = createStore<IssueViewState>()(viewStoreSlice);
@@ -29,5 +34,45 @@ describe("isIssueViewModified", () => {
     expect(isIssueViewModified(view, store.getState())).toEqual({ filters: true, display: false });
     store.setState({ priorityFilters: [], viewMode: "board" });
     expect(isIssueViewModified(view, store.getState())).toEqual({ filters: false, display: true });
+  });
+
+  it("treats 'is not' on an empty dimension as no change", () => {
+    const store = liveStateFor(view);
+    store.getState().setFilterNegated("label", true);
+    expect(isIssueViewModified(view, store.getState()).filters).toBe(false);
+    store.getState().setFilterNegated("status", true);
+    expect(isIssueViewModified(view, store.getState()).filters).toBe(true);
+  });
+
+  it("round-trips a negated view without reporting it modified", () => {
+    const negatedView = {
+      query: { statusFilters: ["done"], negatedFilters: ["status"], relationFilters: ["assigned"] },
+      display: {},
+    };
+    const store = liveStateFor(negatedView);
+    expect(store.getState().negatedFilters).toEqual(["status"]);
+    expect(isIssueViewModified(negatedView, store.getState()).filters).toBe(false);
+    expect(issueViewDefinitionFromState(store.getState()).query).toMatchObject({
+      negatedFilters: ["status"],
+      relationFilters: ["assigned"],
+    });
+  });
+});
+
+describe("modifiedFilterDimensions", () => {
+  const view = {
+    query: { statusFilters: ["done"], negatedFilters: ["status"], priorityFilters: ["high"] },
+    display: {},
+  };
+
+  it("names the dimensions whose values or relation changed", () => {
+    const store = liveStateFor(view);
+    expect([...modifiedFilterDimensions(view, store.getState())]).toEqual([]);
+    store.getState().toggleRelationFilter("created");
+    store.getState().setFilterNegated("status", false);
+    store.getState().setPropertyFilterValues("prop-1", ["x"]);
+    expect([...modifiedFilterDimensions(view, store.getState())].sort()).toEqual(
+      ["property:prop-1", "relation", "status"],
+    );
   });
 });

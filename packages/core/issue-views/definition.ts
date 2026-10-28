@@ -1,9 +1,12 @@
 import { createStore } from "zustand/vanilla";
 import type { IssueView } from "../api/schemas";
 import {
+  effectiveNegatedFilters,
   mergeViewStatePersisted,
+  NEGATABLE_FILTER_DIMENSIONS,
   viewStoreSlice,
   type IssueViewState,
+  type NegatableFilterDimension,
 } from "../issues/stores/view-store";
 
 /** What a saved view stores: its filters, and the display it opens with. */
@@ -24,6 +27,8 @@ export function issueViewDefinitionFromState(state: IssueViewState): IssueViewDe
       includeNoProject: state.includeNoProject,
       projectStatusFilters: state.projectStatusFilters,
       labelFilters: state.labelFilters,
+      relationFilters: state.relationFilters,
+      negatedFilters: effectiveNegatedFilters(state),
       propertyFilters: state.propertyFilters,
     },
     display: {
@@ -64,6 +69,47 @@ function stableStringify(value: unknown): string {
       ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => a.localeCompare(b)))
       : inner,
   );
+}
+
+const DIMENSION_FIELDS: Record<NegatableFilterDimension, readonly string[]> = {
+  status: ["statusFilters"],
+  priority: ["priorityFilters"],
+  assignee: ["assigneeFilters", "includeNoAssignee"],
+  creator: ["creatorFilters"],
+  project: ["projectFilters", "includeNoProject"],
+  projectStatus: ["projectStatusFilters"],
+  label: ["labelFilters"],
+  relation: ["relationFilters"],
+};
+
+/**
+ * The filter dimensions (chip keys) whose condition differs from what the
+ * view saves: its values, or its "is" / "is not".
+ */
+export function modifiedFilterDimensions(
+  view: Pick<IssueView, "query" | "display">,
+  state: IssueViewState,
+): Set<string> {
+  const seed = issueViewSeedDefinition(view).query;
+  const live = issueViewDefinitionFromState(state).query;
+  const seedNegated = new Set(seed.negatedFilters as NegatableFilterDimension[]);
+  const liveNegated = new Set(live.negatedFilters as NegatableFilterDimension[]);
+  const modified = new Set<string>();
+  for (const dimension of NEGATABLE_FILTER_DIMENSIONS) {
+    const fields = DIMENSION_FIELDS[dimension];
+    const changed =
+      seedNegated.has(dimension) !== liveNegated.has(dimension) ||
+      fields.some((field) => stableStringify(seed[field]) !== stableStringify(live[field]));
+    if (changed) modified.add(dimension);
+  }
+  const seedProperties = (seed.propertyFilters ?? {}) as Record<string, unknown>;
+  const liveProperties = (live.propertyFilters ?? {}) as Record<string, unknown>;
+  for (const id of new Set([...Object.keys(seedProperties), ...Object.keys(liveProperties)])) {
+    if (stableStringify(seedProperties[id] ?? []) !== stableStringify(liveProperties[id] ?? [])) {
+      modified.add(`property:${id}`);
+    }
+  }
+  return modified;
 }
 
 /** Whether the live state drifted from what the view saves. */

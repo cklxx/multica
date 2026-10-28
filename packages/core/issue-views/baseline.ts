@@ -1,4 +1,10 @@
-import type { ActorFilterValue, FilterSnapshot } from "../issues/stores/view-store";
+import type {
+  ActorFilterValue,
+  FilterSnapshot,
+  IssueRelationFilter,
+  NegatableFilterDimension,
+} from "../issues/stores/view-store";
+import { ISSUE_RELATION_FILTERS, NEGATABLE_FILTER_DIMENSIONS } from "../issues/stores/view-store";
 import type { IssuePriority, IssueStatus, ProjectStatus, PropertyFilterValue } from "../types";
 import { isKnownPropertyFilterOp, isPropertyOperatorFilter, propertyFilterValueKey } from "../types";
 import { PRIORITY_DISPLAY_ORDER } from "../issues/config";
@@ -24,6 +30,9 @@ export interface IssueViewBaseline {
   includeNoProject: boolean;
   projectStatus: Set<string>;
   label: Set<string>;
+  relation: Set<string>;
+  /** Dimensions the view saved as "is not". */
+  negated: Set<NegatableFilterDimension>;
   /** Property definition id → fixed member keys (`propertyFilterValueKey`). */
   property: Map<string, Set<string>>;
   /** Enum-sanitized snapshot, safe to hand straight to `resetFiltersTo`. */
@@ -86,6 +95,17 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
     (s): s is ProjectStatus => (PROJECT_STATUS_ORDER as readonly string[]).includes(s),
   );
   const labelFilters = stringArray(query.labelFilters);
+  const relationFilters = stringArray(query.relationFilters).filter(
+    (r): r is IssueRelationFilter => (ISSUE_RELATION_FILTERS as readonly string[]).includes(r),
+  );
+  const negatedFilters = [
+    ...new Set(
+      stringArray(query.negatedFilters).filter(
+        (d): d is NegatableFilterDimension =>
+          (NEGATABLE_FILTER_DIMENSIONS as readonly string[]).includes(d),
+      ),
+    ),
+  ];
   const includeNoAssignee = query.includeNoAssignee === true;
   const includeNoProject = query.includeNoProject === true;
 
@@ -113,6 +133,8 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
     includeNoProject,
     projectStatus: new Set(projectStatusFilters),
     label: new Set(labelFilters),
+    relation: new Set(relationFilters),
+    negated: new Set(negatedFilters),
     property,
     raw: {
       statusFilters,
@@ -124,6 +146,8 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
       includeNoProject,
       projectStatusFilters,
       labelFilters,
+      relationFilters,
+      negatedFilters,
       propertyFilters,
     },
   };
@@ -141,6 +165,7 @@ export function issueViewFilterCount(query: Record<string, unknown>): number {
       raw.projectFilters.length || raw.includeNoProject,
       raw.projectStatusFilters.length,
       raw.labelFilters.length,
+      raw.relationFilters.length,
     ].filter(Boolean).length + Object.keys(raw.propertyFilters).length
   );
 }

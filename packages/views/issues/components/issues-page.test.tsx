@@ -301,6 +301,8 @@ const mockViewState = {
   includeNoProject: false,
   projectStatusFilters: [] as string[],
   labelFilters: [] as string[],
+  relationFilters: [] as string[],
+  negatedFilters: [] as string[],
   propertyFilters: {} as Record<string, string[]>,
   cardPropertyIds: [] as string[],
   sortBy: "position" as const,
@@ -344,6 +346,8 @@ vi.mock("@multica/core/issues/stores/view-store", () => ({
     key.startsWith("property:") ? key.slice("property:".length) : null,
   viewStorePersistOptions: () => ({ name: "test", storage: undefined, partialize: (s: any) => s }),
   mergeViewStatePersisted: (_p: unknown, c: any) => c,
+  effectiveNegatedFilters: () => [],
+  ISSUE_RELATION_FILTERS: ["assigned", "created", "my_agents"],
   viewStoreSlice: vi.fn(),
   useIssueViewStore: Object.assign(
     (selector?: any) => (selector ? selector(mockViewState) : mockViewState),

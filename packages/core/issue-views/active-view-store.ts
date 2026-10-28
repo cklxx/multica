@@ -53,6 +53,7 @@ export function lockedDimensionsFromQuery(
   }
   if (nonEmptyArray(query.projectStatusFilters)) locked.add("projectStatus");
   if (nonEmptyArray(query.labelFilters)) locked.add("label");
+  if (nonEmptyArray(query.relationFilters)) locked.add("relation");
   const propertyFilters = query.propertyFilters;
   if (propertyFilters && typeof propertyFilters === "object") {
     for (const [id, selected] of Object.entries(propertyFilters as Record<string, unknown>)) {

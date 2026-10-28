@@ -74,7 +74,11 @@ const HUMAN_REVIEW = entry({
   position: 1,
 });
 
-function renderFilterMenu(statuses: IssueStatusEntry[], initial: Partial<IssueViewState> = {}) {
+function renderFilterMenu(
+  statuses: IssueStatusEntry[],
+  initial: Partial<IssueViewState> = {},
+  menuProps: { summaryTitle?: string } = {},
+) {
   setApiInstance({
     listIssueStatuses: async () => ({
       statuses,
@@ -90,13 +94,14 @@ function renderFilterMenu(statuses: IssueStatusEntry[], initial: Partial<IssueVi
   const store = createStore<IssueViewState>()(viewStoreSlice);
   store.setState(initial);
 
-  return renderWithI18n(
+  renderWithI18n(
     <QueryClientProvider client={qc}>
       <ViewStoreProvider store={store}>
-        <IssueFilterMenu trigger={<button type="button">Filter</button>} />
+        <IssueFilterMenu trigger={<button type="button">Filter</button>} {...menuProps} />
       </ViewStoreProvider>
     </QueryClientProvider>,
   );
+  return store;
 }
 
 /** Opens the Filter menu, then its Status submenu. */
@@ -167,7 +172,7 @@ describe("IssueFilterMenu active dimensions", () => {
     await screen.findByText("Active");
 
     const rows = dimensionRows();
-    expect(rows[0]).toBe("PriorityHigh");
+    expect(rows[0]).toBe("PriorityisHigh");
     expect(rows.slice(1, 3)).toEqual(["Status", "Assignee"]);
   });
 
@@ -183,5 +188,39 @@ describe("IssueFilterMenu active dimensions", () => {
     );
     expect(screen.queryByText("Active")).not.toBeInTheDocument();
     expect(dimensionRows()[0]).toMatch(/^Status/);
+  });
+
+  // The hover summary wraps the trigger once a filter exists. Swapping the
+  // wrapper on the first pick remounted the trigger, and the open menu lost
+  // its anchor and jumped to the viewport corner.
+  it("keeps the same trigger node when the first filter lands", async () => {
+    renderFilterMenu(BUILT_INS, {}, { summaryTitle: "All issues" });
+    const trigger = screen.getByRole("button", { name: "Filter" });
+
+    await openStatusSubmenu();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /In Review/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: /^Status/ }).textContent).toContain("In Review"),
+    );
+
+    expect(screen.getByRole("button", { name: "Filter" })).toBe(trigger);
+  });
+});
+
+describe("IssueFilterMenu operator switch", () => {
+  it("flips a dimension to is not without closing its submenu", async () => {
+    const store = renderFilterMenu(BUILT_INS, { statusFilters: ["in_review"] });
+
+    await openStatusSubmenu();
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "is not" }));
+
+    await waitFor(() => expect(store.getState().negatedFilters).toEqual(["status"]));
+    expect(screen.getByRole("menuitemcheckbox", { name: /In Review/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /^Status/ }).textContent).toBe(
+      "Statusis notIn Review",
+    );
+
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "is" }));
+    await waitFor(() => expect(store.getState().negatedFilters).toEqual([]));
   });
 });

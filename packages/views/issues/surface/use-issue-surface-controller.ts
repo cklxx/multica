@@ -9,6 +9,7 @@ import type {
   IssueTableFacetSpec,
   IssueTableFacetsResponse,
   IssueTableGroupsRequest,
+  IssueTableNegatableFilter,
   IssueTableQuerySpec,
   Project,
   WorkingAgentSummary,
@@ -29,11 +30,21 @@ import {
   assigneeTypesForActorKind,
   type IssueScope,
 } from "@multica/core/issues/surface/scope";
-import type { IssueDateFilter, SortField } from "@multica/core/issues/stores/view-store";
+import type {
+  IssueDateFilter,
+  NegatableFilterDimension,
+  SortField,
+} from "@multica/core/issues/stores/view-store";
 import { propertyListOptions } from "@multica/core/properties";
-import { propertyIdFromViewKey } from "@multica/core/issues/stores/view-store";
+import {
+  effectiveNegatedFilters,
+  propertyIdFromViewKey,
+} from "@multica/core/issues/stores/view-store";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
-import type { IssueFilters } from "../utils/filter";
+import { useAuthStore } from "@multica/core/auth";
+import { agentListOptions } from "@multica/core/workspace/queries";
+import { useShallow } from "zustand/react/shallow";
+import type { IssueFilters, IssueRelationContext } from "../utils/filter";
 import type { ChildProgress } from "../components/list-row";
 import { IssueTableExportIntegrityError } from "../components/table-view-model";
 import type { IssueSurfaceMode } from "./types";
@@ -182,6 +193,17 @@ function useDebouncedTableSearch(value: string, delayMs = 250) {
  * and the branch query list once per render (MUL-5477). */
 const EMPTY_LIST: never[] = [];
 
+const TABLE_NEGATE_FIELD: Record<NegatableFilterDimension, IssueTableNegatableFilter> = {
+  status: "statuses",
+  priority: "priorities",
+  assignee: "assignees",
+  creator: "creators",
+  project: "project_ids",
+  projectStatus: "project_statuses",
+  label: "label_ids",
+  relation: "relations",
+};
+
 /**
  * Pin a derived value's identity to its CONTENT.
  *
@@ -231,6 +253,8 @@ export function useIssueSurfaceController({
   const includeNoProject = useViewStore((s) => s.includeNoProject);
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
+  const storedRelationFilters = useViewStore((s) => s.relationFilters);
+  const negatedFilters = useViewStore(useShallow(effectiveNegatedFilters));
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const agentRunningFilter = useViewStore((s) => s.agentRunningFilter);
   const showSubIssues = useViewStore((s) => s.showSubIssues);
@@ -242,8 +266,30 @@ export function useIssueSurfaceController({
   const listCollapsedStatuses = useViewStore((s) => s.listCollapsedStatuses);
   const hiddenStatusKeys = useViewStore((s) => s.hiddenStatuses);
   const catalog = useIssueStatuses(wsId);
-  const { workflow: projectWorkflow } = useColumnWorkflow(wsId, projectId, statusFilters.length > 0);
+  const statusNegated = negatedFilters.includes("status");
+  const { workflow: projectWorkflow } = useColumnWorkflow(
+    wsId,
+    projectId,
+    statusFilters.length > 0 && !statusNegated,
+  );
   const [tableSearch, setTableSearch] = useState("");
+  // A "my issues" surface already scopes by relation; the menu hides the
+  // dimension there, and a persisted value must not silently narrow it.
+  const relationFilters = scope.type === "my" ? EMPTY_LIST : storedRelationFilters;
+  const userId = useAuthStore((s) => s.user?.id);
+  const { data: agents } = useQuery({
+    ...agentListOptions(wsId),
+    enabled: relationFilters.length > 0,
+  });
+  const relationContext = useMemo<IssueRelationContext | undefined>(() => {
+    if (!userId || !agents) return undefined;
+    return {
+      userId,
+      myAgentIds: new Set(
+        agents.filter((agent) => agent.owner_id === userId).map((agent) => agent.id),
+      ),
+    };
+  }, [agents, userId]);
 
   const allowedModes = useMemo(() => new Set<IssueSurfaceMode>(modes), [modes]);
   const fallbackMode = modes[0] ?? "list";
@@ -339,8 +385,12 @@ export function useIssueSurfaceController({
   const usesServerFacets =
     usesTable || usesServerStatusSurface || usesServerGroupSurface;
   const statusColumnsForFilters = useMemo(
-    () => statusFilterColumns(statusFilters, catalog),
-    [catalog, statusFilters],
+    // Exclusion needs no category: it only removes the listed keys.
+    () =>
+      statusNegated
+        ? ({ state: "resolved", columns: new Set<IssueStatus>() } as const)
+        : statusFilterColumns(statusFilters, catalog),
+    [catalog, statusFilters, statusNegated],
   );
   /**
    * A custom-status filter cannot be routed until the catalog answers. While it
@@ -370,6 +420,7 @@ export function useIssueSurfaceController({
           statusFilters,
           hiddenStatusKeys,
           catalog,
+          statusNegated,
         ),
         projectWorkflow,
       );
@@ -383,6 +434,7 @@ export function useIssueSurfaceController({
       listCollapsedStatuses,
       catalog,
       statusFilters,
+      statusNegated,
       projectWorkflow,
     ],
   );
@@ -412,6 +464,7 @@ export function useIssueSurfaceController({
     viewIncludeNoProject ||
     projectStatusFilters.length > 0 ||
     labelFilters.length > 0 ||
+    relationFilters.length > 0 ||
     Object.keys(effectivePropertyFilters).length > 0 ||
     dateFilter != null ||
     agentRunningFilter === true;
@@ -487,6 +540,17 @@ export function useIssueSurfaceController({
             end: dateParams.date_end,
           }
         : undefined;
+    const negate = negatedFilters
+      .filter((dimension) =>
+        // A project surface drops the project dimension; and on a "my"
+        // surface the relation dimension (see `relationFilters`).
+        dimension === "project"
+          ? viewProjectFilters.length > 0 || viewIncludeNoProject
+          : dimension === "relation"
+            ? relationFilters.length > 0
+            : true,
+      )
+      .map((dimension) => TABLE_NEGATE_FIELD[dimension]);
     return {
       scope: queryScope,
       filters: {
@@ -503,6 +567,8 @@ export function useIssueSurfaceController({
           ? { project_statuses: projectStatusFilters }
           : {}),
         ...(labelFilters.length > 0 ? { label_ids: labelFilters } : {}),
+        ...(relationFilters.length > 0 ? { relations: relationFilters } : {}),
+        ...(negate.length > 0 ? { negate } : {}),
         ...(Object.keys(effectivePropertyFilters).length > 0
           ? { properties: effectivePropertyFilters }
           : {}),
@@ -529,8 +595,10 @@ export function useIssueSurfaceController({
     effectivePropertyFilters,
     includeNoAssignee,
     labelFilters,
+    negatedFilters,
     priorityFilters,
     projectStatusFilters,
+    relationFilters,
     scope,
     showSubIssues,
     sort.sort_by,
@@ -678,8 +746,13 @@ export function useIssueSurfaceController({
   ]);
   const serverGroupQuery = useMemo<IssueTableQuerySpec>(() => {
     if (effectiveViewMode !== "swimlane") return tableQuerySpec;
-    const { statuses: _statuses, ...filters } = tableQuerySpec.filters;
-    return { ...tableQuerySpec, filters };
+    // Status is the secondary axis here: its columns already apply it.
+    const { statuses: _statuses, negate, ...filters } = tableQuerySpec.filters;
+    const otherNegate = negate?.filter((field) => field !== "statuses") ?? [];
+    return {
+      ...tableQuerySpec,
+      filters: { ...filters, ...(otherNegate.length > 0 ? { negate: otherNegate } : {}) },
+    };
   }, [effectiveViewMode, tableQuerySpec]);
   const serverGroupBranches = useIssueGroupBranches({
     wsId,
@@ -713,6 +786,8 @@ export function useIssueSurfaceController({
         viewIncludeNoProject,
         projectStatusFilters,
         labelFilters,
+        relationFilters,
+        negatedFilters,
         effectivePropertyFilters,
         agentRunningFilter,
         showSubIssues,
@@ -728,8 +803,10 @@ export function useIssueSurfaceController({
       effectivePropertyFilters,
       includeNoAssignee,
       labelFilters,
+      negatedFilters,
       priorityFilters,
       projectStatusFilters,
+      relationFilters,
       showSubIssues,
       statusFilters,
       viewIncludeNoProject,
@@ -763,6 +840,9 @@ export function useIssueSurfaceController({
     includeNoProject: viewIncludeNoProject,
     projectStatusFilters,
     labelFilters,
+    relationFilters,
+    relationContext,
+    negatedFilters,
     propertyFilters: effectivePropertyFilters,
     workingIssueIDs,
     showSubIssues,

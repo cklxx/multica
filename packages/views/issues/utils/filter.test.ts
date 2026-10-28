@@ -714,3 +714,71 @@ describe("scalar operator filters", () => {
     expect(result.map((i) => i.id)).toEqual(["B"]);
   });
 });
+
+describe("negated filters", () => {
+  const ids = (filters: Partial<IssueFilters>) =>
+    filterIssues(issues, { ...NO_FILTER, ...filters }).map((i) => i.id);
+
+  it("status is not done", () => {
+    expect(ids({ statusFilters: ["done"], negatedFilters: ["status"] })).toEqual(["1", "2", "4"]);
+  });
+
+  it("assignee is not a member keeps unassigned issues, like the server", () => {
+    expect(
+      ids({ assigneeFilters: [{ type: "member", id: "u-1" }], negatedFilters: ["assignee"] }),
+    ).toEqual(["2", "3", "4"]);
+  });
+
+  it("assignee is not 'No assignee' keeps every assigned issue", () => {
+    expect(ids({ includeNoAssignee: true, negatedFilters: ["assignee"] })).toEqual(["1", "2", "4"]);
+  });
+
+  it("project is not p-1 keeps projectless issues", () => {
+    expect(ids({ projectFilters: ["p-1"], negatedFilters: ["project"] })).toEqual(["2", "3"]);
+  });
+
+  it("label is not keeps unlabeled issues", () => {
+    const labeled = makeIssue({ id: "L", labels: [{ id: "bug", name: "Bug", color: "#f00" }] as Issue["labels"] });
+    const plain = makeIssue({ id: "P" });
+    const result = filterIssues([labeled, plain], {
+      ...NO_FILTER,
+      labelFilters: ["bug"],
+      negatedFilters: ["label"],
+    });
+    expect(result.map((i) => i.id)).toEqual(["P"]);
+  });
+
+  it("negation is per dimension and ANDs with the others", () => {
+    expect(
+      ids({ statusFilters: ["done"], priorityFilters: ["high"], negatedFilters: ["status"] }),
+    ).toEqual(["1"]);
+  });
+
+  it("a negated dimension without values filters nothing", () => {
+    expect(ids({ negatedFilters: ["status", "label"] })).toEqual(["1", "2", "3", "4"]);
+  });
+});
+
+describe("relation filters", () => {
+  const relationContext = { userId: "u-1", myAgentIds: new Set(["a-1"]) };
+  const ids = (filters: Partial<IssueFilters>) =>
+    filterIssues(issues, { ...NO_FILTER, relationContext, ...filters }).map((i) => i.id);
+
+  it("ORs the selected relations", () => {
+    expect(ids({ relationFilters: ["assigned"] })).toEqual(["1"]);
+    expect(ids({ relationFilters: ["my_agents"] })).toEqual(["2"]);
+    expect(ids({ relationFilters: ["assigned", "my_agents"] })).toEqual(["1", "2"]);
+    // Issue 2 was created by agent a-1, not by the member u-1.
+    expect(ids({ relationFilters: ["created"] })).toEqual(["1", "4"]);
+  });
+
+  it("can be negated", () => {
+    expect(ids({ relationFilters: ["created"], negatedFilters: ["relation"] })).toEqual(["2", "3"]);
+  });
+
+  it("is a no-op until the viewer is known", () => {
+    expect(
+      filterIssues(issues, { ...NO_FILTER, relationFilters: ["assigned"] }).map((i) => i.id),
+    ).toEqual(["1", "2", "3", "4"]);
+  });
+});

@@ -62,6 +62,11 @@ vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
 }));
 
+vi.mock("@multica/core/auth", () => ({
+  useAuthStore: (selector: (state: { user: { id: string } }) => unknown) =>
+    selector({ user: { id: "user-1" } }),
+}));
+
 vi.mock("@multica/core/issues/mutations", () => ({
   useUpdateIssue: () => ({ mutate: updateIssueMutate, isPending: false }),
   useBatchUpdateIssues: () => ({
@@ -278,6 +283,53 @@ describe("useIssueSurfaceController", () => {
         }),
       }),
     );
+  });
+
+  it("sends relations and negated dimensions, and excludes negated status columns", async () => {
+    const store = getIssueSurfaceViewStore("workspace");
+    store.getState().toggleStatusFilter("done");
+    store.getState().setFilterNegated("status", true);
+    store.getState().toggleRelationFilter("assigned");
+    store.getState().toggleRelationFilter("my_agents");
+    // "Is not" with nothing selected never reaches the server.
+    store.getState().setFilterNegated("label", true);
+
+    const { result } = renderHook(
+      () =>
+        useIssueSurfaceController({
+          scope: { type: "workspace" },
+          modes: ["board", "list"],
+        }),
+      { wrapper: makeWrapper(qc, "workspace") },
+    );
+
+    await waitFor(() => expect(listIssueTableRows).toHaveBeenCalled());
+    expect(result.current.tableQuerySpec.filters).toMatchObject({
+      statuses: ["done"],
+      relations: ["assigned", "my_agents"],
+      negate: ["statuses"],
+    });
+    expect(result.current.visibleStatuses).not.toContain("done");
+    expect(result.current.visibleStatuses).toContain("todo");
+  });
+
+  it("ignores a persisted relation filter on a surface already scoped to me", async () => {
+    const store = getIssueSurfaceViewStore("my:user-1:assigned");
+    store.getState().toggleRelationFilter("created");
+    store.getState().setFilterNegated("relation", true);
+
+    const { result } = renderHook(
+      () =>
+        useIssueSurfaceController({
+          scope: { type: "my", relation: "assigned", userId: "user-1" },
+          modes: ["board", "list"],
+        }),
+      { wrapper: makeWrapper(qc, "my:user-1:assigned") },
+    );
+
+    await waitFor(() => expect(listIssueTableRows).toHaveBeenCalled());
+    expect(result.current.tableQuerySpec.filters.relations).toBeUndefined();
+    expect(result.current.tableQuerySpec.filters.negate).toBeUndefined();
   });
 
   // Off by default: an untouched surface sends no project-status key at all.

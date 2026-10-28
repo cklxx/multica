@@ -129,8 +129,20 @@ export interface FilterSnapshot {
   includeNoProject: boolean;
   projectStatusFilters: ProjectStatus[];
   labelFilters: string[];
+  relationFilters: IssueRelationFilter[];
+  negatedFilters: NegatableFilterDimension[];
   propertyFilters: Record<string, PropertyFilterValue[]>;
 }
+
+/** How the viewer relates to an issue. Unlike the "my issues" scope axis this
+ *  is an ordinary filter dimension: OR within, AND with everything else. */
+export type IssueRelationFilter = "assigned" | "created" | "my_agents";
+
+export const ISSUE_RELATION_FILTERS: readonly IssueRelationFilter[] = [
+  "assigned",
+  "created",
+  "my_agents",
+];
 
 /** Filter-bar chip dimensions. Date is excluded: `dateFilter` lives outside
  *  the persisted slice and clears through `setDateFilter(null)`. */
@@ -142,7 +154,59 @@ export type FilterDimension =
   | "project"
   | "projectStatus"
   | "label"
+  | "relation"
   | `property:${string}`;
+
+/** Dimensions that can say "is not". Custom properties carry their own
+ *  operators and are not part of this. */
+export type NegatableFilterDimension = Exclude<FilterDimension, `property:${string}`>;
+
+export const NEGATABLE_FILTER_DIMENSIONS: readonly NegatableFilterDimension[] = [
+  "status",
+  "priority",
+  "assignee",
+  "creator",
+  "project",
+  "projectStatus",
+  "label",
+  "relation",
+];
+
+/** Whether a negatable dimension has anything selected. */
+export function filterDimensionHasSelection(
+  state: Omit<FilterSnapshot, "negatedFilters">,
+  dimension: NegatableFilterDimension,
+): boolean {
+  switch (dimension) {
+    case "status":
+      return state.statusFilters.length > 0;
+    case "priority":
+      return state.priorityFilters.length > 0;
+    case "assignee":
+      return state.assigneeFilters.length > 0 || state.includeNoAssignee;
+    case "creator":
+      return state.creatorFilters.length > 0;
+    case "project":
+      return state.projectFilters.length > 0 || state.includeNoProject;
+    case "projectStatus":
+      return state.projectStatusFilters.length > 0;
+    case "label":
+      return state.labelFilters.length > 0;
+    case "relation":
+      return state.relationFilters.length > 0;
+  }
+}
+
+/**
+ * The negations that actually change the result, in canonical order. "Is
+ * not" on a dimension with nothing selected is a UI state, not a filter.
+ */
+export function effectiveNegatedFilters(state: FilterSnapshot): NegatableFilterDimension[] {
+  const negated = new Set(state.negatedFilters);
+  return NEGATABLE_FILTER_DIMENSIONS.filter(
+    (dimension) => negated.has(dimension) && filterDimensionHasSelection(state, dimension),
+  );
+}
 
 export const PROPERTY_VIEW_PREFIX = "property:";
 
@@ -254,6 +318,13 @@ export interface IssueViewState {
    */
   projectStatusFilters: ProjectStatus[];
   labelFilters: string[];
+  relationFilters: IssueRelationFilter[];
+  /**
+   * Dimensions whose selection is excluded instead of matched ("status is
+   * not done"). The selection itself lives in the dimension's own field; an
+   * entry here with nothing selected filters nothing.
+   */
+  negatedFilters: NegatableFilterDimension[];
   /**
    * Custom-property filters: definition id → selected values (checkbox
    * definitions use the pseudo-options "true"/"false"; scalars hold the
@@ -324,6 +395,8 @@ export interface IssueViewState {
   toggleNoProject: () => void;
   toggleProjectStatusFilter: (status: ProjectStatus) => void;
   toggleLabelFilter: (labelId: string) => void;
+  toggleRelationFilter: (relation: IssueRelationFilter) => void;
+  setFilterNegated: (dimension: NegatableFilterDimension, negated: boolean) => void;
   togglePropertyFilter: (propertyId: string, optionId: string) => void;
   /** Replace a property's full filter value set (used by scalar value inputs
    *  for text/number/date/url, which build the array including "__none__"). */
@@ -373,6 +446,8 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   includeNoProject: false,
   projectStatusFilters: [],
   labelFilters: [],
+  relationFilters: [],
+  negatedFilters: [],
   propertyFilters: {},
   dateFilter: null,
   agentRunningFilter: false,
@@ -477,6 +552,21 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
         ? state.labelFilters.filter((id) => id !== labelId)
         : [...state.labelFilters, labelId],
     })),
+  toggleRelationFilter: (relation) =>
+    set((state) => ({
+      relationFilters: state.relationFilters.includes(relation)
+        ? state.relationFilters.filter((r) => r !== relation)
+        : [...state.relationFilters, relation],
+    })),
+  setFilterNegated: (dimension, negated) =>
+    set((state) => {
+      if (state.negatedFilters.includes(dimension) === negated) return state;
+      return {
+        negatedFilters: negated
+          ? [...state.negatedFilters, dimension]
+          : state.negatedFilters.filter((d) => d !== dimension),
+      };
+    }),
   togglePropertyFilter: (propertyId, optionId) =>
     set((state) => {
       const current = state.propertyFilters[propertyId] ?? [];
@@ -519,6 +609,8 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
       includeNoProject: false,
       projectStatusFilters: [],
       labelFilters: [],
+      relationFilters: [],
+      negatedFilters: [],
       propertyFilters: {},
       dateFilter: null,
       agentRunningFilter: false,
@@ -526,21 +618,24 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   resetFiltersTo: (snapshot) => set({ ...snapshot }),
   clearFilterDimension: (dimension) =>
     set((state) => {
+      const negatedFilters = state.negatedFilters.filter((d) => d !== dimension);
       switch (dimension) {
         case "status":
-          return { statusFilters: [] };
+          return { statusFilters: [], negatedFilters };
         case "priority":
-          return { priorityFilters: [] };
+          return { priorityFilters: [], negatedFilters };
         case "assignee":
-          return { assigneeFilters: [], includeNoAssignee: false };
+          return { assigneeFilters: [], includeNoAssignee: false, negatedFilters };
         case "creator":
-          return { creatorFilters: [] };
+          return { creatorFilters: [], negatedFilters };
         case "project":
-          return { projectFilters: [], includeNoProject: false };
+          return { projectFilters: [], includeNoProject: false, negatedFilters };
         case "projectStatus":
-          return { projectStatusFilters: [] };
+          return { projectStatusFilters: [], negatedFilters };
         case "label":
-          return { labelFilters: [] };
+          return { labelFilters: [], negatedFilters };
+        case "relation":
+          return { relationFilters: [], negatedFilters };
         default: {
           const propertyId = propertyIdFromViewKey(dimension);
           if (!propertyId || !(propertyId in state.propertyFilters)) return state;
@@ -676,6 +771,8 @@ export const viewStorePersistOptions = (name: string) => ({
     includeNoProject: state.includeNoProject,
     projectStatusFilters: state.projectStatusFilters,
     labelFilters: state.labelFilters,
+    relationFilters: state.relationFilters,
+    negatedFilters: state.negatedFilters,
     propertyFilters: state.propertyFilters,
     sortBy: state.sortBy,
     sortDirection: state.sortDirection,
@@ -798,6 +895,16 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
           (PROJECT_STATUS_ORDER as readonly string[]).includes(status as string),
         )
       : current.projectStatusFilters,
+    relationFilters: Array.isArray(p.relationFilters)
+      ? p.relationFilters.filter((relation): relation is IssueRelationFilter =>
+          (ISSUE_RELATION_FILTERS as readonly unknown[]).includes(relation),
+        )
+      : current.relationFilters,
+    negatedFilters: Array.isArray(p.negatedFilters)
+      ? [...new Set(p.negatedFilters.filter((dimension): dimension is NegatableFilterDimension =>
+          (NEGATABLE_FILTER_DIMENSIONS as readonly unknown[]).includes(dimension),
+        ))]
+      : current.negatedFilters,
   };
   return {
     ...merged,

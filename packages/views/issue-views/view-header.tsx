@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { toast } from "sonner";
 import {
@@ -54,6 +54,7 @@ import {
   isIssueViewModified,
   issueViewDefinitionFromState,
   issueViewSeedDefinition,
+  modifiedFilterDimensions,
 } from "@multica/core/issue-views/definition";
 import { useIssueViewRenameStore } from "@multica/core/issue-views/rename-store";
 import {
@@ -273,8 +274,17 @@ export function IssueViewHeader({
     );
   }
 
-  const { chips: filterChips } = useFilterChips(dateFilter, setDateFilter);
+  // "My issues" is already a relation to me; a second one there is noise.
+  const showRelation = base.kind !== "my";
+  const { chips: allFilterChips } = useFilterChips(dateFilter, setDateFilter);
+  const filterChips = showRelation
+    ? allFilterChips
+    : allFilterChips.filter((chip) => chip.key !== "relation");
   const filterCount = filterChips.length + (scopeCounts ? 1 : 0);
+  const modifiedKeys = useMemo(
+    () => (activeView && modified?.filters ? modifiedFilterDimensions(activeView, state) : undefined),
+    [activeView, modified?.filters, state],
+  );
   const viewMode = useViewStore((s) => s.viewMode);
   const zoneRef = useRef<HTMLDivElement>(null);
   // Step 1 folds the display controls to icons, step 2 the agents chip and
@@ -441,6 +451,9 @@ export function IssueViewHeader({
             </Button>
           }
           leadingSections={scopeSection}
+          showRelation={showRelation}
+          modifiedKeys={modifiedKeys}
+          summaryTitle={activeView?.name ?? baseName}
           scopedIssues={controller.surfaceIssues}
           facetCountsExact={controller.facetCountsExact}
           tableFacetCounts={controller.tableFacetCounts}

@@ -2,11 +2,13 @@
 
 import { cloneElement, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Bot,
   CalendarDays,
   ChartGantt,
   ChevronDown,
   CircleDashed,
   CircleDot,
+  CircleUser,
   Columns3,
   Filter,
   FolderKanban,
@@ -60,7 +62,12 @@ import {
   PRIORITY_DISPLAY_ORDER,
 } from "@multica/core/issues/config";
 import { StatusIcon, PriorityIcon } from ".";
-import { useFilterChips, type FilterChip } from "./filter-chips-bar";
+import {
+  FilterOperator,
+  RELATION_LABEL_KEY,
+  useFilterChips,
+  type FilterChip,
+} from "./filter-chips-bar";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions, agentListOptions, squadListOptions } from "@multica/core/workspace/queries";
@@ -90,9 +97,12 @@ import {
   CARD_PROPERTY_OPTIONS,
   cardPropertyOptionsForView,
   sortOptionsForView,
+  ISSUE_RELATION_FILTERS,
   type ActorFilterValue,
   type IssueDateField,
   type IssueDateFilter,
+  type IssueRelationFilter,
+  type NegatableFilterDimension,
   type SortField,
   type IssueGrouping,
   type SwimlaneGrouping,
@@ -131,6 +141,8 @@ function getActiveFilterCount(
     includeNoProject: boolean;
     projectStatusFilters: ProjectStatus[];
     labelFilters: string[];
+    relationFilters: string[];
+    negatedFilters: NegatableFilterDimension[];
     propertyFilters?: Record<string, PropertyFilterValue[]>;
     dateFilter?: IssueDateFilter | null;
   },
@@ -139,21 +151,28 @@ function getActiveFilterCount(
   baseline?: IssueViewBaseline,
 ) {
   let count = 0;
+  const negated = new Set(state.negatedFilters);
+  // Flipping a view's own "is" to "is not" makes the whole dimension new.
+  const fixedFor = (dimension: NegatableFilterDimension, fixed?: Set<string>) =>
+    baseline && baseline.negated.has(dimension) === negated.has(dimension) ? fixed : undefined;
   const delta = (values: string[], fixed?: Set<string>) =>
     fixed ? values.filter((v) => !fixed.has(v)).length : values.length;
-  if (delta(state.statusFilters, baseline?.status) > 0) count++;
-  if (delta(state.priorityFilters, baseline?.priority) > 0) count++;
+  if (delta(state.statusFilters, fixedFor("status", baseline?.status)) > 0) count++;
+  if (delta(state.priorityFilters, fixedFor("priority", baseline?.priority)) > 0) count++;
+  const assigneeFixed = fixedFor("assignee", baseline?.assignee);
   const assigneeDelta =
-    delta(state.assigneeFilters.map(actorFilterKey), baseline?.assignee) > 0 ||
-    (state.includeNoAssignee && !(baseline?.includeNoAssignee ?? false));
+    delta(state.assigneeFilters.map(actorFilterKey), assigneeFixed) > 0 ||
+    (state.includeNoAssignee && !(assigneeFixed && baseline?.includeNoAssignee));
   if (assigneeDelta) count++;
-  if (delta(state.creatorFilters.map(actorFilterKey), baseline?.creator) > 0) count++;
+  if (delta(state.creatorFilters.map(actorFilterKey), fixedFor("creator", baseline?.creator)) > 0) count++;
+  const projectFixed = fixedFor("project", baseline?.project);
   const projectDelta =
-    delta(state.projectFilters, baseline?.project) > 0 ||
-    (state.includeNoProject && !(baseline?.includeNoProject ?? false));
+    delta(state.projectFilters, projectFixed) > 0 ||
+    (state.includeNoProject && !(projectFixed && baseline?.includeNoProject));
   if (projectDelta) count++;
-  if (delta(state.projectStatusFilters, baseline?.projectStatus) > 0) count++;
-  if (delta(state.labelFilters, baseline?.label) > 0) count++;
+  if (delta(state.projectStatusFilters, fixedFor("projectStatus", baseline?.projectStatus)) > 0) count++;
+  if (delta(state.labelFilters, fixedFor("label", baseline?.label)) > 0) count++;
+  if (delta(state.relationFilters, fixedFor("relation", baseline?.relation)) > 0) count++;
   for (const [id, selected] of Object.entries(state.propertyFilters ?? {})) {
     // Property members can be operator objects — compare through their
     // canonical keys so a view-fixed operator still cancels out.
@@ -1156,11 +1175,101 @@ export function ViewRefreshIndicator({ active }: { active: boolean }) {
   );
 }
 
-/** What a dimension is filtering on, in its row of the filter menu. */
-function FilterTriggerValue({ chip }: { chip: FilterChip | undefined }) {
+/** What a dimension is filtering on, in its row of the filter menu: the
+ *  relation word, the values, and a dot when it differs from the saved view. */
+function FilterTriggerValue({
+  chip,
+  modified = false,
+}: {
+  chip: FilterChip | undefined;
+  modified?: boolean;
+}) {
   if (!chip) return null;
   return (
-    <span className="ml-3 max-w-40 truncate text-caption font-medium text-primary">{chip.value}</span>
+    <span className="ml-3 flex min-w-0 items-center gap-1 text-caption">
+      <FilterOperator negated={chip.negated} />
+      <span className="max-w-40 truncate font-medium text-primary">{chip.value}</span>
+      {modified && <ModifiedDot />}
+    </span>
+  );
+}
+
+function ModifiedDot() {
+  const { t } = useT("issues");
+  const label = t(($) => $.filters.modified_hint);
+  return <span role="img" aria-label={label} title={label} className="size-1.5 shrink-0 rounded-full bg-brand" />;
+}
+
+const OPERATOR_SEGMENT_CLASS =
+  "h-6 flex-1 justify-center rounded-md px-3 py-0 text-caption text-muted-foreground focus:bg-background/60 data-checked:bg-background data-checked:font-medium data-checked:text-foreground data-checked:shadow-xs [&>[data-slot=dropdown-menu-radio-item-indicator]]:hidden";
+
+/** "Is" / "is not" for one dimension, heading its submenu. Radio items keep
+ *  it in the menu's keyboard order; the selection below is left as it is. */
+function FilterOperatorSwitch({ dimension }: { dimension: NegatableFilterDimension }) {
+  const { t } = useT("issues");
+  const negated = useViewStore((s) => s.negatedFilters.includes(dimension));
+  const setFilterNegated = useViewStore((s) => s.setFilterNegated);
+  return (
+    <>
+      <DropdownMenuRadioGroup
+        aria-label={t(($) => $.filters.operator_label)}
+        value={negated ? "is_not" : "is"}
+        onValueChange={(value) => setFilterNegated(dimension, value === "is_not")}
+        className="m-1 flex gap-0.5 rounded-lg bg-muted p-0.5"
+      >
+        <DropdownMenuRadioItem value="is" closeOnClick={false} className={OPERATOR_SEGMENT_CLASS}>
+          {t(($) => $.filters.operator_is)}
+        </DropdownMenuRadioItem>
+        <DropdownMenuRadioItem value="is_not" closeOnClick={false} className={OPERATOR_SEGMENT_CLASS}>
+          {t(($) => $.filters.operator_is_not)}
+        </DropdownMenuRadioItem>
+      </DropdownMenuRadioGroup>
+      <DropdownMenuSeparator />
+    </>
+  );
+}
+
+const RELATION_ICONS: Record<IssueRelationFilter, typeof User> = {
+  assigned: CircleUser,
+  created: UserPen,
+  my_agents: Bot,
+};
+
+/** Read-only sentence form of the active filters, shown on hover so a closed
+ *  menu still says what the surface is narrowed to. */
+function FilterSummary({
+  title,
+  chips,
+  modifiedKeys,
+}: {
+  title: string;
+  chips: FilterChip[];
+  modifiedKeys?: ReadonlySet<string>;
+}) {
+  const { t } = useT("issues");
+  const modifiedCount = chips.filter((chip) => modifiedKeys?.has(chip.key)).length;
+  return (
+    <div className="flex w-72 flex-col gap-1 py-1">
+      <div className="mb-1 flex items-center gap-1.5 font-medium">
+        <Filter className="size-3.5" />
+        <span className="truncate">{title}</span>
+      </div>
+      {chips.map((chip) => (
+        <div key={chip.key} className="flex min-w-0 items-center gap-1.5">
+          {chip.icon}
+          <span className="shrink-0 text-muted-foreground">{chip.label}</span>
+          <FilterOperator negated={chip.negated} />
+          <span className="min-w-0 truncate">{chip.value}</span>
+          {modifiedKeys?.has(chip.key) && <ModifiedDot />}
+        </div>
+      ))}
+      {modifiedCount > 0 && (
+        <div className="mt-1 flex items-center gap-1.5 border-t border-border pt-1.5 text-muted-foreground">
+          <ModifiedDot />
+          {t(($) => $.filters.unsaved_changes, { count: modifiedCount })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1183,12 +1292,22 @@ export function IssueFilterMenu({
   viewBaseline,
   leadingSections,
   align = "end",
+  showRelation = true,
+  modifiedKeys,
+  summaryTitle,
 }: {
   trigger: React.ReactElement;
   align?: "start" | "end";
   /** Rendered above the filter dimensions, e.g. the surface's scope axis. */
   leadingSections?: React.ReactNode;
   tooltip?: string;
+  /** Offer "relation to me". A surface already scoped to me hides it. */
+  showRelation?: boolean;
+  /** Chip keys whose condition differs from the open saved view. */
+  modifiedKeys?: ReadonlySet<string>;
+  /** With active filters, hovering the trigger shows them as sentences under
+   *  this title instead of `tooltip`. */
+  summaryTitle?: string;
   scopedIssues?: Issue[];
   facetCountsExact?: boolean;
   tableFacetCounts?: IssueTableFacetsResponse;
@@ -1217,6 +1336,8 @@ export function IssueFilterMenu({
   const includeNoProject = useViewStore((s) => s.includeNoProject);
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
+  const relationFilters = useViewStore((s) => s.relationFilters);
+  const negatedFilters = useViewStore((s) => s.negatedFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const viewStoreApi = useViewStoreApi();
   const act = viewStoreApi.getState();
@@ -1252,13 +1373,19 @@ export function IssueFilterMenu({
         includeNoProject,
         projectStatusFilters,
         labelFilters,
+        relationFilters: showRelation ? relationFilters : [],
+        negatedFilters,
         dateFilter: showDateFilter ? dateFilter : null,
       },
       viewBaseline,
     ) > 0;
   const fixedTitle = viewBaseline ? t(($) => $.filters.in_view) : undefined;
-  const { chips } = useFilterChips(showDateFilter ? dateFilter : null, onDateFilterChange, viewBaseline);
+  const { chips: allChips } = useFilterChips(showDateFilter ? dateFilter : null, onDateFilterChange, viewBaseline);
+  const chips = showRelation ? allChips : allChips.filter((chip) => chip.key !== "relation");
   const chipByKey = new Map(chips.map((chip) => [chip.key, chip]));
+  const triggerValue = (key: string) => (
+    <FilterTriggerValue chip={chipByKey.get(key)} modified={modifiedKeys?.has(key)} />
+  );
   const [activeAtOpen, setActiveAtOpen] = useState<ReadonlySet<string> | null>(null);
   const activeKeys = activeAtOpen ?? new Set(chipByKey.keys());
   const dateFilterLabel = showDateFilter && dateFilter
@@ -1286,9 +1413,10 @@ export function IssueFilterMenu({
               <DropdownMenuSubTrigger>
                 <CircleDot className="size-3.5" />
                 <span className="flex-1">{t(($) => $.filters.section_status)}</span>
-                <FilterTriggerValue chip={chipByKey.get("status")} />
+                {triggerValue("status")}
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-auto min-w-48">
+                <FilterOperatorSwitch dimension="status" />
                 {/* Options come from the workspace catalog, so a custom status
                     is filterable — otherwise an issue moved onto one could not
                     be narrowed to. One flat list in category order: the icon
@@ -1339,9 +1467,10 @@ export function IssueFilterMenu({
               <DropdownMenuSubTrigger>
                 <SignalHigh className="size-3.5" />
                 <span className="flex-1">{t(($) => $.filters.section_priority)}</span>
-                <FilterTriggerValue chip={chipByKey.get("priority")} />
+                {triggerValue("priority")}
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-auto min-w-44">
+                <FilterOperatorSwitch dimension="priority" />
                 {PRIORITY_DISPLAY_ORDER.map((p) => {
                   const checked = priorityFilters.includes(p);
                   const count = counts.priority.get(p) ?? 0;
@@ -1400,9 +1529,10 @@ export function IssueFilterMenu({
               <DropdownMenuSubTrigger>
                 <User className="size-3.5" />
                 <span className="flex-1">{t(($) => $.filters.section_assignee)}</span>
-                <FilterTriggerValue chip={chipByKey.get("assignee")} />
+                {triggerValue("assignee")}
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-auto min-w-52 p-0">
+                <FilterOperatorSwitch dimension="assignee" />
                 <ActorSubContent
                   counts={counts.assignee}
                   selected={assigneeFilters}
@@ -1429,9 +1559,10 @@ export function IssueFilterMenu({
               <DropdownMenuSubTrigger>
                 <UserPen className="size-3.5" />
                 <span className="flex-1">{t(($) => $.filters.section_creator)}</span>
-                <FilterTriggerValue chip={chipByKey.get("creator")} />
+                {triggerValue("creator")}
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-auto min-w-52 p-0">
+                <FilterOperatorSwitch dimension="creator" />
                 <ActorSubContent
                   counts={counts.creator}
                   selected={creatorFilters}
@@ -1440,6 +1571,40 @@ export function IssueFilterMenu({
                   fixedKeys={viewBaseline?.creator}
                   fixedTitle={fixedTitle}
                 />
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            )}
+
+            {/* Relation to me — OR across assigned / created / my agents,
+                which no single actor dimension can express. */}
+            {showRelation && inPass("relation", pass) && (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <CircleUser className="size-3.5" />
+                <span className="flex-1">{t(($) => $.filters.section_relation)}</span>
+                {triggerValue("relation")}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-auto min-w-52">
+                <FilterOperatorSwitch dimension="relation" />
+                {ISSUE_RELATION_FILTERS.map((relation) => {
+                  const checked = relationFilters.includes(relation);
+                  const fixed = viewBaseline?.relation.has(relation) === true;
+                  const Icon = RELATION_ICONS[relation];
+                  return (
+                    <DropdownMenuCheckboxItem
+                      key={relation}
+                      checked={checked}
+                      disabled={fixed}
+                      title={fixed ? fixedTitle : undefined}
+                      onCheckedChange={() => act.toggleRelationFilter(relation)}
+                      className={FILTER_ITEM_CLASS}
+                    >
+                      <HoverCheck checked={checked} />
+                      <Icon className="size-3.5 text-muted-foreground" />
+                      {t(($) => $.filters[RELATION_LABEL_KEY[relation]])}
+                    </DropdownMenuCheckboxItem>
+                  );
+                })}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             )}
@@ -1454,9 +1619,10 @@ export function IssueFilterMenu({
               <DropdownMenuSubTrigger>
                 <FolderKanban className="size-3.5" />
                 <span className="flex-1">{t(($) => $.filters.section_project)}</span>
-                <FilterTriggerValue chip={chipByKey.get("project")} />
+                {triggerValue("project")}
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-auto min-w-52 p-0">
+                <FilterOperatorSwitch dimension="project" />
                 <ProjectSubContent
                   counts={counts.project}
                   selected={projectFilters}
@@ -1480,9 +1646,10 @@ export function IssueFilterMenu({
               <DropdownMenuSubTrigger>
                 <CircleDashed className="size-3.5" />
                 <span className="flex-1">{t(($) => $.filters.section_project_status)}</span>
-                <FilterTriggerValue chip={chipByKey.get("projectStatus")} />
+                {triggerValue("projectStatus")}
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-auto min-w-52 p-0">
+                <FilterOperatorSwitch dimension="projectStatus" />
                 <ProjectStatusSubContent
                   selected={projectStatusFilters}
                   onToggle={act.toggleProjectStatusFilter}
@@ -1503,9 +1670,10 @@ export function IssueFilterMenu({
               <DropdownMenuSubTrigger>
                 <Tag className="size-3.5" />
                 <span className="flex-1">{t(($) => $.filters.section_label)}</span>
-                <FilterTriggerValue chip={chipByKey.get("label")} />
+                {triggerValue("label")}
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-auto min-w-52 p-0">
+                <FilterOperatorSwitch dimension="label" />
                 <LabelSubContent
                   counts={counts.label}
                   selected={labelFilters}
@@ -1539,7 +1707,7 @@ export function IssueFilterMenu({
                       <SlidersHorizontal className="size-3.5" />
                     )}
                     <span className="flex-1 truncate">{property.name}</span>
-                    <FilterTriggerValue chip={chipByKey.get(`property:${property.id}`)} />
+                    {triggerValue(`property:${property.id}`)}
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-auto min-w-44 p-1">
                     <PropertyFilterOptions
@@ -1581,10 +1749,18 @@ export function IssueFilterMenu({
         onOpenChange?.(open);
       }}
     >
-      {tooltip ? (
-        <Tooltip>
+      {/* One tree for both bodies: swapping wrappers when the first filter
+          lands would remount the trigger and strand the open menu's anchor. */}
+      {summaryTitle || tooltip ? (
+        <Tooltip disabled={(!tooltip && chips.length === 0) || (!!summaryTitle && activeAtOpen !== null)}>
           <DropdownMenuTrigger render={<TooltipTrigger render={anchoredTrigger} />} />
-          <TooltipContent side="bottom">{tooltip}</TooltipContent>
+          {summaryTitle && chips.length > 0 ? (
+            <TooltipContent side="bottom" align="start" className="max-w-sm">
+              <FilterSummary title={summaryTitle} chips={chips} modifiedKeys={modifiedKeys} />
+            </TooltipContent>
+          ) : (
+            <TooltipContent side="bottom">{tooltip}</TooltipContent>
+          )}
         </Tooltip>
       ) : (
         <DropdownMenuTrigger render={anchoredTrigger} />
@@ -1690,6 +1866,8 @@ export function IssueDisplayControls({
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
+  const relationFilters = useViewStore((s) => s.relationFilters);
+  const negatedFilters = useViewStore((s) => s.negatedFilters);
   const cardPropertyIds = useViewStore((s) => s.cardPropertyIds);
   const sortBy = useViewStore((s) => s.sortBy);
   const sortDirection = useViewStore((s) => s.sortDirection);
@@ -1765,6 +1943,8 @@ export function IssueDisplayControls({
       includeNoProject,
       projectStatusFilters,
       labelFilters,
+      relationFilters,
+      negatedFilters,
       dateFilter: showDateFilter ? dateFilter : null,
     },
     viewBaseline,

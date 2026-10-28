@@ -312,6 +312,18 @@ export type IssueTableScope =
   | { kind: "creator"; actor: IssueActorRef }
   | { kind: "my"; relation: "assigned" | "created" | "involved" | "any" };
 
+export type IssueTableRelation = "assigned" | "created" | "my_agents";
+
+export type IssueTableNegatableFilter =
+  | "statuses"
+  | "priorities"
+  | "assignees"
+  | "creators"
+  | "project_ids"
+  | "project_statuses"
+  | "label_ids"
+  | "relations";
+
 export interface IssueTableFilters {
   statuses?: IssueStatus[];
   priorities?: IssuePriority[];
@@ -325,6 +337,12 @@ export interface IssueTableFilters {
    *  matches. */
   project_statuses?: ProjectStatus[];
   label_ids?: string[];
+  /** How the requesting user relates to the issue, OR within the list:
+   *  assigned to me, created by me, assigned to an agent I own. */
+  relations?: IssueTableRelation[];
+  /** Dimensions whose predicate is inverted ("is not"). Listing a dimension
+   *  that has no values of its own changes nothing. */
+  negate?: IssueTableNegatableFilter[];
   /** Same shape as `ListIssuesParams.properties`: bare strings are exact
    *  equality / "No value", operator objects narrow scalar matches. */
   properties?: Record<string, PropertyFilterValue[]>;

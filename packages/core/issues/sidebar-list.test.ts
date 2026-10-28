@@ -112,6 +112,16 @@ describe("viewSidebarParams", () => {
     expect(viewHasSidebarPreview({ query: {}, display: {}, scope_type: "my", scope_variant: "assigned" })).toBe(true);
     expect(viewHasSidebarPreview({ query: {}, display: {}, scope_type: "workspace", scope_variant: null })).toBe(true);
   });
+
+  it("has no preview for conditions the list endpoint cannot express", () => {
+    const workspace = { display: {}, scope_type: "workspace" as const, scope_variant: null };
+    expect(viewHasSidebarPreview({ ...workspace, query: { relationFilters: ["assigned"] } })).toBe(false);
+    expect(
+      viewHasSidebarPreview({ ...workspace, query: { statusFilters: ["done"], negatedFilters: ["status"] } }),
+    ).toBe(false);
+    // "Is not" with nothing selected is not a condition.
+    expect(viewHasSidebarPreview({ ...workspace, query: { negatedFilters: ["status"] } })).toBe(true);
+  });
 });
 
 describe("sidebarProjects", () => {
