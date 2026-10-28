@@ -19,7 +19,13 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useColumnWorkflow, workflowColumns } from "../utils/workflow-columns";
 import { statusFilterColumns, visibleStatusKeys } from "@multica/core/issues";
-import { dateOnlyToLocalDate } from "@multica/core/issues/date";
+import { dateOnlyToLocalDate, todayDateOnly } from "@multica/core/issues/date";
+import {
+  advancedFilterToTableQuery,
+  advancedFilterUsesField,
+  FILTER_DIMENSION_TABLE_FIELD,
+  withoutAdvancedFilterFields,
+} from "@multica/core/issues/stores/filter-tree";
 import type { IssueSortParam } from "@multica/core/issues/queries";
 import { issueTableFacetsOptions } from "@multica/core/issues/queries";
 import {
@@ -193,16 +199,8 @@ function useDebouncedTableSearch(value: string, delayMs = 250) {
  * and the branch query list once per render (MUL-5477). */
 const EMPTY_LIST: never[] = [];
 
-const TABLE_NEGATE_FIELD: Record<NegatableFilterDimension, IssueTableNegatableFilter> = {
-  status: "statuses",
-  priority: "priorities",
-  assignee: "assignees",
-  creator: "creators",
-  project: "project_ids",
-  projectStatus: "project_statuses",
-  label: "label_ids",
-  relation: "relations",
-};
+const TABLE_NEGATE_FIELD: Record<NegatableFilterDimension, IssueTableNegatableFilter> =
+  FILTER_DIMENSION_TABLE_FIELD;
 
 /**
  * Pin a derived value's identity to its CONTENT.
@@ -254,6 +252,8 @@ export function useIssueSurfaceController({
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
   const storedRelationFilters = useViewStore((s) => s.relationFilters);
+  const dueDateFilters = useViewStore((s) => s.dueDateFilters);
+  const storedAdvancedFilter = useViewStore((s) => s.advancedFilter);
   const negatedFilters = useViewStore(useShallow(effectiveNegatedFilters));
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const agentRunningFilter = useViewStore((s) => s.agentRunningFilter);
@@ -276,10 +276,30 @@ export function useIssueSurfaceController({
   // A "my issues" surface already scopes by relation; the menu hides the
   // dimension there, and a persisted value must not silently narrow it.
   const relationFilters = scope.type === "my" ? EMPTY_LIST : storedRelationFilters;
+  // The same rule for the rule tree, and a project surface already fixes the
+  // project. Pruned: empty rows the panel is still editing filter nothing.
+  const advancedFilter = useMemo(
+    () =>
+      withoutAdvancedFilterFields(storedAdvancedFilter, [
+        ...(scope.type === "my" ? (["relation"] as const) : []),
+        ...(scope.type === "project" ? (["project"] as const) : []),
+      ]),
+    [scope.type, storedAdvancedFilter],
+  );
+  const advancedTableFilter = useMemo(
+    () => advancedFilterToTableQuery(advancedFilter),
+    [advancedFilter],
+  );
+  // Due-date buckets resolve against the viewer's calendar day. Sent only
+  // when a bucket is in play, so other queries keep one cache key across
+  // midnight.
+  const usesDueDates =
+    dueDateFilters.length > 0 || advancedFilterUsesField(advancedFilter, "dueDate");
+  const today = usesDueDates ? todayDateOnly() : undefined;
   const userId = useAuthStore((s) => s.user?.id);
   const { data: agents } = useQuery({
     ...agentListOptions(wsId),
-    enabled: relationFilters.length > 0,
+    enabled: relationFilters.length > 0 || advancedFilterUsesField(advancedFilter, "relation"),
   });
   const relationContext = useMemo<IssueRelationContext | undefined>(() => {
     if (!userId || !agents) return undefined;
@@ -465,6 +485,8 @@ export function useIssueSurfaceController({
     projectStatusFilters.length > 0 ||
     labelFilters.length > 0 ||
     relationFilters.length > 0 ||
+    dueDateFilters.length > 0 ||
+    advancedFilter !== null ||
     Object.keys(effectivePropertyFilters).length > 0 ||
     dateFilter != null ||
     agentRunningFilter === true;
@@ -568,7 +590,10 @@ export function useIssueSurfaceController({
           : {}),
         ...(labelFilters.length > 0 ? { label_ids: labelFilters } : {}),
         ...(relationFilters.length > 0 ? { relations: relationFilters } : {}),
+        ...(dueDateFilters.length > 0 ? { due_dates: dueDateFilters } : {}),
+        ...(today ? { today } : {}),
         ...(negate.length > 0 ? { negate } : {}),
+        ...(advancedTableFilter ? { advanced: advancedTableFilter } : {}),
         ...(Object.keys(effectivePropertyFilters).length > 0
           ? { properties: effectivePropertyFilters }
           : {}),
@@ -587,11 +612,13 @@ export function useIssueSurfaceController({
       },
     };
   }, [
+    advancedTableFilter,
     agentRunningFilter,
     assigneeFilters,
     creatorFilters,
     dateParams,
     debouncedActiveSearch,
+    dueDateFilters,
     effectivePropertyFilters,
     includeNoAssignee,
     labelFilters,
@@ -604,6 +631,7 @@ export function useIssueSurfaceController({
     sort.sort_by,
     sort.sort_direction,
     statusFilters,
+    today,
     viewIncludeNoProject,
     viewProjectFilters,
     workingFilterUnresolved,
@@ -787,6 +815,9 @@ export function useIssueSurfaceController({
         projectStatusFilters,
         labelFilters,
         relationFilters,
+        dueDateFilters,
+        advancedTableFilter,
+        today,
         negatedFilters,
         effectivePropertyFilters,
         agentRunningFilter,
@@ -795,11 +826,13 @@ export function useIssueSurfaceController({
         debouncedActiveSearch,
       ]),
     [
+      advancedTableFilter,
       agentRunningFilter,
       assigneeFilters,
       creatorFilters,
       dateParams,
       debouncedActiveSearch,
+      dueDateFilters,
       effectivePropertyFilters,
       includeNoAssignee,
       labelFilters,
@@ -809,6 +842,7 @@ export function useIssueSurfaceController({
       relationFilters,
       showSubIssues,
       statusFilters,
+      today,
       viewIncludeNoProject,
       viewProjectFilters,
     ],
@@ -842,6 +876,9 @@ export function useIssueSurfaceController({
     labelFilters,
     relationFilters,
     relationContext,
+    dueDateFilters,
+    advancedFilter,
+    today,
     negatedFilters,
     propertyFilters: effectivePropertyFilters,
     workingIssueIDs,
@@ -851,6 +888,7 @@ export function useIssueSurfaceController({
       // cannot be evaluated without the catalog, so the filter itself has to
       // pull it in.
       projectStatusFilters.length > 0 ||
+      advancedFilterUsesField(advancedFilter, "projectStatus") ||
       cardProperties.project ||
       (usesTable && tableColumns.some((column) => column.key === "project")) ||
       // Project group headers resolve their title through the projects query,

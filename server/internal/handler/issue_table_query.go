@@ -95,9 +95,18 @@ type issueTableFiltersRequest struct {
 	// Relations narrows by how the requesting user relates to the issue
 	// (`issueTableRelations`), OR within the list.
 	Relations []string `json:"relations,omitempty"`
+	// DueDates narrows by relative due-date bucket (`issueTableDueDates`),
+	// OR within the list, resolved against Today.
+	DueDates []string `json:"due_dates,omitempty"`
+	// Today is the viewer's calendar day (YYYY-MM-DD). Required whenever a
+	// due-date bucket is filtered on, here or in Advanced.
+	Today string `json:"today,omitempty"`
 	// Negate names the dimensions above (by JSON field) whose predicate is
 	// inverted. A listed dimension with no values of its own changes nothing.
 	Negate []string `json:"negate,omitempty"`
+	// Advanced is a condition tree ANDed with every flat filter: the one
+	// place an "or" can span dimensions.
+	Advanced *issueTableFilterNode `json:"advanced,omitempty"`
 	// Members are raw JSON so operator objects ({op, value}) and plain
 	// strings both survive the round-trip into parsePropertiesFilterParam.
 	Properties       map[string][]json.RawMessage `json:"properties,omitempty"`
@@ -271,6 +280,8 @@ func canonicalIssueTableFingerprint(workspaceID string, spec issueTableQuerySpec
 	normalized.Filters.LabelIDs = sortedUniqueStrings(normalized.Filters.LabelIDs)
 	normalized.Filters.Relations = sortedUniqueStrings(normalized.Filters.Relations)
 	normalized.Filters.Negate = sortedUniqueStrings(normalized.Filters.Negate)
+	normalized.Filters.DueDates = sortedUniqueStrings(normalized.Filters.DueDates)
+	normalized.Filters.Advanced = canonicalIssueTableFilterNode(normalized.Filters.Advanced)
 	normalized.Filters.Assignees = sortedUniqueActors(normalized.Filters.Assignees)
 	normalized.Filters.WorkingIssueIDs = sortedUniqueStrings(normalized.Filters.WorkingIssueIDs)
 	normalized.Filters.Creators = sortedUniqueActors(normalized.Filters.Creators)
@@ -407,7 +418,7 @@ var issueTableRelations = []string{"assigned", "created", "my_agents"}
 // issueTableNegatableFilters are the `filters` fields `filters.negate` may name.
 var issueTableNegatableFilters = []string{
 	"statuses", "priorities", "assignees", "creators",
-	"project_ids", "project_statuses", "label_ids", "relations",
+	"project_ids", "project_statuses", "label_ids", "relations", "due_dates",
 }
 
 // issueTableRelationPredicate matches issues related to the user one way.
@@ -705,6 +716,70 @@ func (h *Handler) compileIssueTableQuery(w http.ResponseWriter, r *http.Request,
 	}
 	if len(labelIDs) > 0 {
 		appendFilter("label_ids", fmt.Sprintf("EXISTS (SELECT 1 FROM issue_to_label itl WHERE itl.issue_id = i.id AND itl.label_id = ANY(%s::uuid[]))", addArg(labelIDs)))
+	}
+
+	var (
+		today         time.Time
+		todayResolved bool
+	)
+	resolveToday := func() (time.Time, error) {
+		if !todayResolved {
+			parsed, ok := parseIssueTableToday(spec.Filters.Today)
+			if !ok {
+				return time.Time{}, invalidIssueTableFilter("filters.today is required for due-date filters")
+			}
+			today, todayResolved = parsed, true
+		}
+		return today, nil
+	}
+	writeFilterError := func(err error) {
+		var filterErr issueTableFilterError
+		if errors.As(err, &filterErr) {
+			writeError(w, filterErr.status, filterErr.message)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+
+	for _, bucket := range spec.Filters.DueDates {
+		if !issueTableContainsString(issueTableDueDates, bucket) {
+			writeError(w, http.StatusBadRequest, "invalid filters.due_dates")
+			return issueTableSQL{}, false
+		}
+	}
+	if buckets := sortedUniqueStrings(spec.Filters.DueDates); len(buckets) > 0 {
+		day, err := resolveToday()
+		if err != nil {
+			writeFilterError(err)
+			return issueTableSQL{}, false
+		}
+		ors := make([]string, 0, len(buckets))
+		for _, bucket := range buckets {
+			ors = append(ors, issueTableDueDatePredicate(bucket, day, addArg))
+		}
+		appendFilter("due_dates", "("+strings.Join(ors, " OR ")+")")
+	}
+
+	if spec.Filters.Advanced != nil {
+		compiler := issueTableFilterCompiler{
+			addArg: addArg,
+			today:  resolveToday,
+			userRef: func() (string, error) {
+				userUUID, err := util.ParseUUID(requestUserID(r))
+				if err != nil {
+					return "", issueTableFilterError{status: http.StatusUnauthorized, message: "user not authenticated"}
+				}
+				return addArg(userUUID), nil
+			},
+		}
+		predicate, err := compiler.compile(*spec.Filters.Advanced)
+		if err != nil {
+			writeFilterError(err)
+			return issueTableSQL{}, false
+		}
+		if predicate != "" {
+			where = append(where, predicate)
+		}
 	}
 
 	if len(spec.Filters.Properties) > 0 {

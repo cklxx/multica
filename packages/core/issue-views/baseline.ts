@@ -4,7 +4,13 @@ import type {
   IssueRelationFilter,
   NegatableFilterDimension,
 } from "../issues/stores/view-store";
-import { ISSUE_RELATION_FILTERS, NEGATABLE_FILTER_DIMENSIONS } from "../issues/stores/view-store";
+import {
+  DUE_DATE_FILTERS,
+  ISSUE_RELATION_FILTERS,
+  NEGATABLE_FILTER_DIMENSIONS,
+  type DueDateFilter,
+} from "../issues/stores/view-store";
+import { countAdvancedConditions, sanitizeAdvancedFilter } from "../issues/stores/filter-tree";
 import type { IssuePriority, IssueStatus, ProjectStatus, PropertyFilterValue } from "../types";
 import { isKnownPropertyFilterOp, isPropertyOperatorFilter, propertyFilterValueKey } from "../types";
 import { PRIORITY_DISPLAY_ORDER } from "../issues/config";
@@ -31,6 +37,7 @@ export interface IssueViewBaseline {
   projectStatus: Set<string>;
   label: Set<string>;
   relation: Set<string>;
+  dueDate: Set<string>;
   /** Dimensions the view saved as "is not". */
   negated: Set<NegatableFilterDimension>;
   /** Property definition id → fixed member keys (`propertyFilterValueKey`). */
@@ -98,6 +105,14 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
   const relationFilters = stringArray(query.relationFilters).filter(
     (r): r is IssueRelationFilter => (ISSUE_RELATION_FILTERS as readonly string[]).includes(r),
   );
+  const dueDateFilters = [
+    ...new Set(
+      stringArray(query.dueDateFilters).filter((d): d is DueDateFilter =>
+        (DUE_DATE_FILTERS as readonly string[]).includes(d),
+      ),
+    ),
+  ];
+  const advancedFilter = sanitizeAdvancedFilter(query.advancedFilter);
   const negatedFilters = [
     ...new Set(
       stringArray(query.negatedFilters).filter(
@@ -134,6 +149,7 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
     projectStatus: new Set(projectStatusFilters),
     label: new Set(labelFilters),
     relation: new Set(relationFilters),
+    dueDate: new Set(dueDateFilters),
     negated: new Set(negatedFilters),
     property,
     raw: {
@@ -147,8 +163,10 @@ export function baselineFromQuery(query: Record<string, unknown>): IssueViewBase
       projectStatusFilters,
       labelFilters,
       relationFilters,
+      dueDateFilters,
       negatedFilters,
       propertyFilters,
+      advancedFilter,
     },
   };
 }
@@ -166,6 +184,9 @@ export function issueViewFilterCount(query: Record<string, unknown>): number {
       raw.projectStatusFilters.length,
       raw.labelFilters.length,
       raw.relationFilters.length,
-    ].filter(Boolean).length + Object.keys(raw.propertyFilters).length
+      raw.dueDateFilters.length,
+    ].filter(Boolean).length +
+    Object.keys(raw.propertyFilters).length +
+    countAdvancedConditions(raw.advancedFilter)
   );
 }

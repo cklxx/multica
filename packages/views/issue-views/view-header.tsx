@@ -19,6 +19,7 @@ import {
   Star,
   EyeOff,
   Filter,
+  ListTree,
   Trash2,
   Users,
 } from "@multica/ui/icons";
@@ -68,6 +69,10 @@ import {
 } from "@multica/core/issues/stores/issues-scope-store";
 import { actorKindForViewVariant } from "@multica/core/issues/surface/scope";
 import { useViewStore, useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
+import {
+  countAdvancedConditions,
+  type NegatableFilterDimension,
+} from "@multica/core/issues/stores/filter-tree";
 import type { Project } from "@multica/core/types";
 import { PageHeader } from "../layout/page-header";
 import { RefreshablePageIcon } from "../layout/refreshable-page-icon";
@@ -89,6 +94,7 @@ export type IssueViewHeaderBase =
   | { kind: "project"; project: Project };
 
 const ASSIGNEE_TYPES: IssuesScope[] = ["all", "members", "agents"];
+const PROJECT_HIDDEN_FIELDS: NegatableFilterDimension[] = ["project"];
 const MY_RELATIONS: Exclude<MyIssuesScope, "agents">[] = ["assigned", "created", "all"];
 const MY_SAVE_VARIANT: Record<MyIssuesScope, NonNullable<CreateIssueViewRequest["scope_variant"]>> = {
   all: "any",
@@ -280,7 +286,14 @@ export function IssueViewHeader({
   const filterChips = showRelation
     ? allFilterChips
     : allFilterChips.filter((chip) => chip.key !== "relation");
-  const filterCount = filterChips.length + (scopeCounts ? 1 : 0);
+  // In advanced mode the trigger names the mode and counts its conditions.
+  const advancedFilter = useViewStore((s) => s.advancedFilter);
+  const advancedMode = advancedFilter !== null;
+  const filterCount =
+    filterChips.filter((chip) => chip.key !== "advanced").length +
+    countAdvancedConditions(advancedFilter) +
+    (scopeCounts ? 1 : 0);
+  const filterLabel = advancedMode ? t(($) => $.filters.advanced_title) : t(($) => $.views.filter);
   const modifiedKeys = useMemo(
     () => (activeView && modified?.filters ? modifiedFilterDimensions(activeView, state) : undefined),
     [activeView, modified?.filters, state],
@@ -436,13 +449,13 @@ export function IssueViewHeader({
                 filterCount > 0 && "text-foreground",
               )}
               aria-label={
-                filterCount > 0
+                filterCount > 0 && !advancedMode
                   ? t(($) => $.views.filter_count, { count: filterCount })
-                  : t(($) => $.views.filter)
+                  : filterLabel
               }
             >
-              <Filter className="size-3.5" />
-              <span className="@max-md/issue-header:hidden">{t(($) => $.views.filter)}</span>
+              {advancedMode ? <ListTree className="size-3.5" /> : <Filter className="size-3.5" />}
+              <span className="@max-md/issue-header:hidden">{filterLabel}</span>
               {filterCount > 0 && (
                 <span className="rounded-sm bg-brand/10 px-1 text-caption font-medium tabular-nums text-brand">
                   {filterCount}
@@ -452,6 +465,7 @@ export function IssueViewHeader({
           }
           leadingSections={scopeSection}
           showRelation={showRelation}
+          hiddenFields={base.kind === "project" ? PROJECT_HIDDEN_FIELDS : undefined}
           modifiedKeys={modifiedKeys}
           summaryTitle={activeView?.name ?? baseName}
           scopedIssues={controller.surfaceIssues}

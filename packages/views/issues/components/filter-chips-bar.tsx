@@ -5,6 +5,7 @@ import { useStatusLabel } from "../utils/status-label";
 import { NO_PROPERTY_VALUE } from "../utils/filter";
 import { useMemo, type ReactNode } from "react";
 import {
+  CalendarClock,
   CalendarDays,
   CircleDashed,
   CircleDot,
@@ -12,6 +13,7 @@ import {
   FolderKanban,
   SignalHigh,
   Tag,
+  ListTree,
   User,
   UserPen,
   X,
@@ -32,7 +34,6 @@ import {
   type FilterDimension,
   type FilterSnapshot,
   type IssueDateFilter,
-  type IssueRelationFilter,
   type NegatableFilterDimension,
 } from "@multica/core/issues/stores/view-store";
 import {
@@ -40,6 +41,11 @@ import {
   type IssueViewBaseline,
 } from "@multica/core/issue-views/baseline";
 import { useViewStore, useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
+import {
+  advancedFilterSignature,
+  countAdvancedConditions,
+} from "@multica/core/issues/stores/filter-tree";
+import { DUE_DATE_LABEL_KEY, RELATION_LABEL_KEY } from "./filter-field-options";
 import { StatusIcon } from "./status-icon";
 import { PriorityIcon } from "./priority-icon";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -83,14 +89,7 @@ function summarize(names: (string | undefined)[]): string {
 
 const CHIP_ICON_CLASS = "size-3 shrink-0 text-muted-foreground";
 
-export const RELATION_LABEL_KEY: Record<
-  IssueRelationFilter,
-  "relation_assigned" | "relation_created" | "relation_my_agents"
-> = {
-  assigned: "relation_assigned",
-  created: "relation_created",
-  my_agents: "relation_my_agents",
-};
+export { RELATION_LABEL_KEY };
 
 /** Overlapping value icons, following the runtime-list stack pattern: each
  *  icon sits on an opaque wrapper so the one underneath cannot show through. */
@@ -227,6 +226,8 @@ export function useFilterChips(
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
   const relationFilters = useViewStore((s) => s.relationFilters);
+  const dueDateFilters = useViewStore((s) => s.dueDateFilters);
+  const advancedFilter = useViewStore((s) => s.advancedFilter);
   const negatedFilters = useViewStore((s) => s.negatedFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const store = useViewStoreApi();
@@ -243,6 +244,8 @@ export function useFilterChips(
     projectStatusFilters.length > 0 ||
     labelFilters.length > 0 ||
     relationFilters.length > 0 ||
+    dueDateFilters.length > 0 ||
+    advancedFilter !== null ||
     Object.values(propertyFilters).some((selected) => selected.length > 0);
   const showDateChip = !!onDateFilterChange && !!dateFilter;
 
@@ -307,11 +310,13 @@ export function useFilterChips(
       projectStatusFilters: s.projectStatusFilters,
       labelFilters: s.labelFilters,
       relationFilters: s.relationFilters,
+      dueDateFilters: s.dueDateFilters,
       // The dimension also returns to the view's own "is" / "is not".
       negatedFilters: baseline.negated.has(dimension as NegatableFilterDimension)
         ? [...otherNegations, dimension as NegatableFilterDimension]
         : otherNegations,
       propertyFilters: s.propertyFilters,
+      advancedFilter: s.advancedFilter,
     };
     switch (dimension) {
       case "status":
@@ -348,6 +353,9 @@ export function useFilterChips(
         break;
       case "relation":
         s.resetFiltersTo({ ...current, relationFilters: raw.relationFilters });
+        break;
+      case "dueDate":
+        s.resetFiltersTo({ ...current, dueDateFilters: raw.dueDateFilters });
         break;
       default: {
         const propertyId = dimension.slice("property:".length);
@@ -387,6 +395,13 @@ export function useFilterChips(
   ).filter((status) => PROJECT_STATUS_CONFIG[status] !== undefined);
   const deltaLabels = without(labelFilters, fixedFor("label", baseline?.label), same);
   const deltaRelations = without(relationFilters, fixedFor("relation", baseline?.relation), same);
+  const deltaDueDates = without(dueDateFilters, fixedFor("dueDate", baseline?.dueDate), same);
+  // The tree is one condition as a whole: it shows unless it is exactly the
+  // view's own.
+  const advancedConditions = countAdvancedConditions(advancedFilter);
+  const showAdvancedChip =
+    advancedFilter !== null &&
+    (!baseline || advancedFilterSignature(advancedFilter) !== advancedFilterSignature(baseline.raw.advancedFilter));
   const deltaProperties: Record<string, PropertyFilterValue[]> = {};
   for (const [id, selected] of Object.entries(propertyFilters)) {
     const fixed = baseline?.property.get(id);
@@ -545,6 +560,29 @@ export function useFilterChips(
       value: summarize(deltaRelations.map((relation) => t(($) => $.filters[RELATION_LABEL_KEY[relation]]))),
       negated: negated.has("relation"),
       onRemove: () => clearDimension("relation"),
+    });
+  }
+  if (deltaDueDates.length > 0) {
+    chips.push({
+      key: "dueDate",
+      icon: <CalendarClock className={CHIP_ICON_CLASS} />,
+      label: t(($) => $.filters.section_due_date),
+      value: summarize(deltaDueDates.map((bucket) => t(($) => $.filters[DUE_DATE_LABEL_KEY[bucket]]))),
+      negated: negated.has("dueDate"),
+      onRemove: () => clearDimension("dueDate"),
+    });
+  }
+  if (showAdvancedChip) {
+    chips.push({
+      key: "advanced",
+      icon: <ListTree className={CHIP_ICON_CLASS} />,
+      label: t(($) => $.filters.advanced_title),
+      value: t(($) => $.filters.advanced_conditions, { count: advancedConditions }),
+      onRemove: () => {
+        const s = store.getState();
+        if (baseline) s.resetFiltersTo({ ...baseline.raw, propertyFilters: s.propertyFilters });
+        else s.setAdvancedFilter(null);
+      },
     });
   }
   for (const [propertyId, selected] of Object.entries(deltaProperties)) {

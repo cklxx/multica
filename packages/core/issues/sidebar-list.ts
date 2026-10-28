@@ -3,6 +3,7 @@ import { baselineFromQuery } from "../issue-views/baseline";
 import type { IssueStatusCategory, ListIssuesParams, Project } from "../types";
 import { assigneeTypesForActorKind } from "./surface/scope";
 import { effectiveNegatedFilters } from "./stores/view-store";
+import { pruneAdvancedFilter } from "./stores/filter-tree";
 import type { SidebarIssueSettings, SidebarProjectSettings } from "./stores/sidebar-tree-store";
 
 /** Rows an expanded sidebar list shows before "Load more". */
@@ -74,10 +75,15 @@ type SidebarViewFields = Pick<IssueView, "query" | "display" | "scope_variant"> 
  */
 export function viewHasSidebarPreview(view: SidebarViewFields): boolean {
   if (view.scope_type === "my" && (view.scope_variant ?? "any") === "any") return false;
-  // The list endpoint has no "is not" and no viewer-relation filter; a preview
-  // that ignored them would list issues the view itself excludes.
+  // The list endpoint has no "is not", viewer-relation, due-date or rule-tree
+  // filter; a preview that ignored them would list issues the view excludes.
   const { raw } = baselineFromQuery(view.query);
-  return raw.relationFilters.length === 0 && effectiveNegatedFilters(raw).length === 0;
+  return (
+    raw.relationFilters.length === 0 &&
+    raw.dueDateFilters.length === 0 &&
+    !pruneAdvancedFilter(raw.advancedFilter) &&
+    effectiveNegatedFilters(raw).length === 0
+  );
 }
 
 function viewScopeParams(view: SidebarViewFields, userId: string | undefined): ListIssuesParams | null {

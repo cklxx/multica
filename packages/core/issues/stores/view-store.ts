@@ -8,6 +8,29 @@ import type { IssueStatus, IssuePriority, ProjectStatus, PropertyFilterValue } f
 import { PROJECT_STATUS_ORDER } from "../../projects/config";
 import { createWorkspaceAwareStorage, registerForWorkspaceRehydration } from "../../platform/workspace-storage";
 import { defaultStorage } from "../../platform/storage";
+import {
+  advancedFilterFromSimple,
+  DUE_DATE_FILTERS,
+  EMPTY_SIMPLE_FILTER_FIELDS,
+  ISSUE_RELATION_FILTERS,
+  NEGATABLE_FILTER_DIMENSIONS,
+  sanitizeAdvancedFilter,
+  simpleFromAdvancedFilter,
+  type AdvancedFilterGroup,
+  type DueDateFilter,
+  type IssueRelationFilter,
+  type NegatableFilterDimension,
+} from "./filter-tree";
+
+export {
+  DUE_DATE_FILTERS,
+  ISSUE_RELATION_FILTERS,
+  NEGATABLE_FILTER_DIMENSIONS,
+  type AdvancedFilterGroup,
+  type DueDateFilter,
+  type IssueRelationFilter,
+  type NegatableFilterDimension,
+};
 
 export type ViewMode = "board" | "list" | "table" | "gantt" | "swimlane";
 export type GanttZoom = "day" | "week" | "month";
@@ -117,8 +140,8 @@ export interface ActorFilterValue {
   id: string;
 }
 
-/** The ten query-defining filter fields as one value — what a saved view
- *  fixes, and what resets restore. */
+/** The query-defining filter fields as one value — what a saved view fixes,
+ *  and what resets restore. */
 export interface FilterSnapshot {
   statusFilters: IssueStatus[];
   priorityFilters: IssuePriority[];
@@ -130,51 +153,19 @@ export interface FilterSnapshot {
   projectStatusFilters: ProjectStatus[];
   labelFilters: string[];
   relationFilters: IssueRelationFilter[];
+  dueDateFilters: DueDateFilter[];
   negatedFilters: NegatableFilterDimension[];
   propertyFilters: Record<string, PropertyFilterValue[]>;
+  advancedFilter: AdvancedFilterGroup | null;
 }
-
-/** How the viewer relates to an issue. Unlike the "my issues" scope axis this
- *  is an ordinary filter dimension: OR within, AND with everything else. */
-export type IssueRelationFilter = "assigned" | "created" | "my_agents";
-
-export const ISSUE_RELATION_FILTERS: readonly IssueRelationFilter[] = [
-  "assigned",
-  "created",
-  "my_agents",
-];
 
 /** Filter-bar chip dimensions. Date is excluded: `dateFilter` lives outside
  *  the persisted slice and clears through `setDateFilter(null)`. */
-export type FilterDimension =
-  | "status"
-  | "priority"
-  | "assignee"
-  | "creator"
-  | "project"
-  | "projectStatus"
-  | "label"
-  | "relation"
-  | `property:${string}`;
-
-/** Dimensions that can say "is not". Custom properties carry their own
- *  operators and are not part of this. */
-export type NegatableFilterDimension = Exclude<FilterDimension, `property:${string}`>;
-
-export const NEGATABLE_FILTER_DIMENSIONS: readonly NegatableFilterDimension[] = [
-  "status",
-  "priority",
-  "assignee",
-  "creator",
-  "project",
-  "projectStatus",
-  "label",
-  "relation",
-];
+export type FilterDimension = NegatableFilterDimension | `property:${string}`;
 
 /** Whether a negatable dimension has anything selected. */
 export function filterDimensionHasSelection(
-  state: Omit<FilterSnapshot, "negatedFilters">,
+  state: Omit<FilterSnapshot, "negatedFilters" | "propertyFilters" | "advancedFilter">,
   dimension: NegatableFilterDimension,
 ): boolean {
   switch (dimension) {
@@ -194,6 +185,8 @@ export function filterDimensionHasSelection(
       return state.labelFilters.length > 0;
     case "relation":
       return state.relationFilters.length > 0;
+    case "dueDate":
+      return state.dueDateFilters.length > 0;
   }
 }
 
@@ -201,7 +194,9 @@ export function filterDimensionHasSelection(
  * The negations that actually change the result, in canonical order. "Is
  * not" on a dimension with nothing selected is a UI state, not a filter.
  */
-export function effectiveNegatedFilters(state: FilterSnapshot): NegatableFilterDimension[] {
+export function effectiveNegatedFilters(
+  state: Omit<FilterSnapshot, "propertyFilters" | "advancedFilter">,
+): NegatableFilterDimension[] {
   const negated = new Set(state.negatedFilters);
   return NEGATABLE_FILTER_DIMENSIONS.filter(
     (dimension) => negated.has(dimension) && filterDimensionHasSelection(state, dimension),
@@ -319,6 +314,7 @@ export interface IssueViewState {
   projectStatusFilters: ProjectStatus[];
   labelFilters: string[];
   relationFilters: IssueRelationFilter[];
+  dueDateFilters: DueDateFilter[];
   /**
    * Dimensions whose selection is excluded instead of matched ("status is
    * not done"). The selection itself lives in the dimension's own field; an
@@ -334,6 +330,13 @@ export interface IssueViewState {
    * across definitions, mirroring the other filter groups.
    */
   propertyFilters: Record<string, PropertyFilterValue[]>;
+  /**
+   * Advanced mode: a rule tree that can "or" across dimensions. Non-null
+   * means the surface is in advanced mode; entering moves the simple value
+   * fields into the tree, so they sit empty while it is set. Custom-property
+   * filters stay where they are and still apply.
+   */
+  advancedFilter: AdvancedFilterGroup | null;
   dateFilter: IssueDateFilter | null;
   // When true, the list only shows issues that currently have at least one
   // agent task in `running` status. Drives the workspace "agents working"
@@ -396,12 +399,21 @@ export interface IssueViewState {
   toggleProjectStatusFilter: (status: ProjectStatus) => void;
   toggleLabelFilter: (labelId: string) => void;
   toggleRelationFilter: (relation: IssueRelationFilter) => void;
+  toggleDueDateFilter: (bucket: DueDateFilter) => void;
   setFilterNegated: (dimension: NegatableFilterDimension, negated: boolean) => void;
   togglePropertyFilter: (propertyId: string, optionId: string) => void;
   /** Replace a property's full filter value set (used by scalar value inputs
    *  for text/number/date/url, which build the array including "__none__"). */
   setPropertyFilterValues: (propertyId: string, optionIds: PropertyFilterValue[]) => void;
   setDateFilter: (filter: IssueDateFilter | null) => void;
+  /** Replace the advanced tree; null leaves advanced mode without carrying
+   *  anything back. */
+  setAdvancedFilter: (filter: AdvancedFilterGroup | null) => void;
+  /** Move the simple value filters into a tree and switch to advanced mode. */
+  enterAdvancedFilter: () => void;
+  /** Back to simple mode with the same filter. A no-op when the tree is
+   *  something simple mode cannot say (`simpleFromAdvancedFilter`). */
+  exitAdvancedFilter: () => void;
   toggleAgentRunningFilter: () => void;
   hideStatus: (status: IssueStatus) => void;
   showStatus: (status: IssueStatus) => void;
@@ -447,8 +459,10 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   projectStatusFilters: [],
   labelFilters: [],
   relationFilters: [],
+  dueDateFilters: [],
   negatedFilters: [],
   propertyFilters: {},
+  advancedFilter: null,
   dateFilter: null,
   agentRunningFilter: false,
   sortBy: "created_at",
@@ -558,6 +572,12 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
         ? state.relationFilters.filter((r) => r !== relation)
         : [...state.relationFilters, relation],
     })),
+  toggleDueDateFilter: (bucket) =>
+    set((state) => ({
+      dueDateFilters: state.dueDateFilters.includes(bucket)
+        ? state.dueDateFilters.filter((b) => b !== bucket)
+        : [...state.dueDateFilters, bucket],
+    })),
   setFilterNegated: (dimension, negated) =>
     set((state) => {
       if (state.negatedFilters.includes(dimension) === negated) return state;
@@ -586,6 +606,22 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
       return { propertyFilters };
     }),
   setDateFilter: (filter) => set({ dateFilter: filter }),
+  setAdvancedFilter: (advancedFilter) => set({ advancedFilter }),
+  enterAdvancedFilter: () =>
+    set((state) =>
+      state.advancedFilter
+        ? state
+        : {
+            ...EMPTY_SIMPLE_FILTER_FIELDS,
+            advancedFilter: advancedFilterFromSimple(state, effectiveNegatedFilters(state)),
+          },
+    ),
+  exitAdvancedFilter: () =>
+    set((state) => {
+      if (!state.advancedFilter) return state;
+      const simple = simpleFromAdvancedFilter(state.advancedFilter);
+      return simple ? { ...simple, advancedFilter: null } : state;
+    }),
   toggleAgentRunningFilter: () =>
     set((state) => ({ agentRunningFilter: !state.agentRunningFilter })),
   hideStatus: (status) =>
@@ -610,8 +646,10 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
       projectStatusFilters: [],
       labelFilters: [],
       relationFilters: [],
+      dueDateFilters: [],
       negatedFilters: [],
       propertyFilters: {},
+      advancedFilter: null,
       dateFilter: null,
       agentRunningFilter: false,
     }),
@@ -636,6 +674,8 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
           return { labelFilters: [], negatedFilters };
         case "relation":
           return { relationFilters: [], negatedFilters };
+        case "dueDate":
+          return { dueDateFilters: [], negatedFilters };
         default: {
           const propertyId = propertyIdFromViewKey(dimension);
           if (!propertyId || !(propertyId in state.propertyFilters)) return state;
@@ -772,8 +812,10 @@ export const viewStorePersistOptions = (name: string) => ({
     projectStatusFilters: state.projectStatusFilters,
     labelFilters: state.labelFilters,
     relationFilters: state.relationFilters,
+    dueDateFilters: state.dueDateFilters,
     negatedFilters: state.negatedFilters,
     propertyFilters: state.propertyFilters,
+    advancedFilter: state.advancedFilter,
     sortBy: state.sortBy,
     sortDirection: state.sortDirection,
     sortDirections: state.sortDirections,
@@ -900,6 +942,14 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
           (ISSUE_RELATION_FILTERS as readonly unknown[]).includes(relation),
         )
       : current.relationFilters,
+    dueDateFilters: Array.isArray(p.dueDateFilters)
+      ? [...new Set(p.dueDateFilters.filter((bucket): bucket is DueDateFilter =>
+          (DUE_DATE_FILTERS as readonly unknown[]).includes(bucket),
+        ))]
+      : current.dueDateFilters,
+    advancedFilter: p.advancedFilter === undefined
+      ? current.advancedFilter
+      : sanitizeAdvancedFilter(p.advancedFilter),
     negatedFilters: Array.isArray(p.negatedFilters)
       ? [...new Set(p.negatedFilters.filter((dimension): dimension is NegatableFilterDimension =>
           (NEGATABLE_FILTER_DIMENSIONS as readonly unknown[]).includes(dimension),

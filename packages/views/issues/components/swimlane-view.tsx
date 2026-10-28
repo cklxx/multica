@@ -681,6 +681,9 @@ function SwimLaneViewImpl({
     labelFilters: activeFiltersProp?.labelFilters ?? [],
     relationFilters: activeFiltersProp?.relationFilters ?? [],
     relationContext: activeFiltersProp?.relationContext,
+    dueDateFilters: activeFiltersProp?.dueDateFilters ?? [],
+    today: activeFiltersProp?.today,
+    advancedFilter: activeFiltersProp?.advancedFilter ?? null,
     negatedFilters: activeFiltersProp?.negatedFilters ?? [],
     // Carry the "Show sub-issues" toggle through to the extra-children merge
     // path (see `filterIssues(extra, activeFilters)` below); otherwise batch /

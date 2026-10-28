@@ -322,7 +322,25 @@ export type IssueTableNegatableFilter =
   | "project_ids"
   | "project_statuses"
   | "label_ids"
-  | "relations";
+  | "relations"
+  | "due_dates";
+
+export type IssueTableDueDate = "overdue" | "today" | "this_week" | "next_7_days" | "none";
+
+/** One node of `filters.advanced`: a group when it has `children`. */
+export type IssueTableFilterNode = IssueTableFilterGroup | IssueTableFilterCondition;
+
+export interface IssueTableFilterGroup {
+  match: "all" | "any";
+  children: IssueTableFilterNode[];
+}
+
+export interface IssueTableFilterCondition {
+  field: IssueTableNegatableFilter;
+  negate?: boolean;
+  /** Actors are `${type}:${id}`; assignees and project_ids accept "none". */
+  values: string[];
+}
 
 export interface IssueTableFilters {
   statuses?: IssueStatus[];
@@ -343,6 +361,13 @@ export interface IssueTableFilters {
   /** Dimensions whose predicate is inverted ("is not"). Listing a dimension
    *  that has no values of its own changes nothing. */
   negate?: IssueTableNegatableFilter[];
+  /** Relative due-date buckets, OR within the list. Needs `today`. */
+  due_dates?: IssueTableDueDate[];
+  /** The viewer's calendar day ("YYYY-MM-DD") the due-date buckets resolve
+   *  against. */
+  today?: string;
+  /** A condition tree ANDed with the flat filters above. */
+  advanced?: IssueTableFilterGroup;
   /** Same shape as `ListIssuesParams.properties`: bare strings are exact
    *  equality / "No value", operator objects narrow scalar matches. */
   properties?: Record<string, PropertyFilterValue[]>;

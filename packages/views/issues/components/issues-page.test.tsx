@@ -302,6 +302,8 @@ const mockViewState = {
   projectStatusFilters: [] as string[],
   labelFilters: [] as string[],
   relationFilters: [] as string[],
+  dueDateFilters: [] as string[],
+  advancedFilter: null,
   negatedFilters: [] as string[],
   propertyFilters: {} as Record<string, string[]>,
   cardPropertyIds: [] as string[],

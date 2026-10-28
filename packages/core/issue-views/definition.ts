@@ -2,12 +2,20 @@ import { createStore } from "zustand/vanilla";
 import type { IssueView } from "../api/schemas";
 import {
   effectiveNegatedFilters,
+  filterDimensionHasSelection,
   mergeViewStatePersisted,
   NEGATABLE_FILTER_DIMENSIONS,
   viewStoreSlice,
+  type FilterSnapshot,
   type IssueViewState,
   type NegatableFilterDimension,
 } from "../issues/stores/view-store";
+import {
+  advancedFilterSignature,
+  pruneAdvancedFilter,
+  sanitizeAdvancedFilter,
+  simpleFromAdvancedFilter,
+} from "../issues/stores/filter-tree";
 
 /** What a saved view stores: its filters, and the display it opens with. */
 export interface IssueViewDefinition {
@@ -28,8 +36,10 @@ export function issueViewDefinitionFromState(state: IssueViewState): IssueViewDe
       projectStatusFilters: state.projectStatusFilters,
       labelFilters: state.labelFilters,
       relationFilters: state.relationFilters,
+      dueDateFilters: state.dueDateFilters,
       negatedFilters: effectiveNegatedFilters(state),
       propertyFilters: state.propertyFilters,
+      advancedFilter: pruneAdvancedFilter(state.advancedFilter),
     },
     display: {
       showSubIssues: state.showSubIssues,
@@ -80,7 +90,33 @@ const DIMENSION_FIELDS: Record<NegatableFilterDimension, readonly string[]> = {
   projectStatus: ["projectStatusFilters"],
   label: ["labelFilters"],
   relation: ["relationFilters"],
+  dueDate: ["dueDateFilters"],
 };
+
+/**
+ * A query reduced to what it filters, for comparisons. Entering advanced mode
+ * rewrites the same filter as a tree with fresh ids, so a tree simple mode
+ * can say compares as those simple fields, and any other tree by its
+ * id-free signature.
+ */
+function filterMeaning(query: Record<string, unknown>): Record<string, unknown> {
+  const tree = sanitizeAdvancedFilter(query.advancedFilter);
+  if (!tree) return { ...query, advancedFilter: "" };
+  const simple = simpleFromAdvancedFilter(tree);
+  const flatEmpty = NEGATABLE_FILTER_DIMENSIONS.every(
+    (dimension) => !filterDimensionHasSelection(query as unknown as FilterSnapshot, dimension),
+  );
+  if (simple && flatEmpty) return { ...query, ...simple, advancedFilter: "" };
+  return { ...query, advancedFilter: advancedFilterSignature(tree) };
+}
+
+/** Whether two filter queries select the same issues by construction. */
+export function sameFilterMeaning(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean {
+  return stableStringify(filterMeaning(a)) === stableStringify(filterMeaning(b));
+}
 
 /**
  * The filter dimensions (chip keys) whose condition differs from what the
@@ -90,8 +126,8 @@ export function modifiedFilterDimensions(
   view: Pick<IssueView, "query" | "display">,
   state: IssueViewState,
 ): Set<string> {
-  const seed = issueViewSeedDefinition(view).query;
-  const live = issueViewDefinitionFromState(state).query;
+  const seed = filterMeaning(issueViewSeedDefinition(view).query);
+  const live = filterMeaning(issueViewDefinitionFromState(state).query);
   const seedNegated = new Set(seed.negatedFilters as NegatableFilterDimension[]);
   const liveNegated = new Set(live.negatedFilters as NegatableFilterDimension[]);
   const modified = new Set<string>();
@@ -109,6 +145,7 @@ export function modifiedFilterDimensions(
       modified.add(`property:${id}`);
     }
   }
+  if (seed.advancedFilter !== live.advancedFilter) modified.add("advanced");
   return modified;
 }
 
@@ -120,7 +157,7 @@ export function isIssueViewModified(
   const seed = issueViewSeedDefinition(view);
   const live = issueViewDefinitionFromState(state);
   return {
-    filters: stableStringify(seed.query) !== stableStringify(live.query),
+    filters: !sameFilterMeaning(seed.query, live.query),
     display: stableStringify(seed.display) !== stableStringify(live.display),
   };
 }

@@ -10,6 +10,7 @@ import {
   type IssueFilters,
   type IssueFilterState,
 } from "./filter";
+import { createFilterCondition, createFilterGroup } from "@multica/core/issues/stores/filter-tree";
 
 const NO_FILTER: IssueFilters = {
   statusFilters: [],
@@ -780,5 +781,77 @@ describe("relation filters", () => {
     expect(
       filterIssues(issues, { ...NO_FILTER, relationFilters: ["assigned"] }).map((i) => i.id),
     ).toEqual(["1", "2", "3", "4"]);
+  });
+});
+
+describe("due date filters", () => {
+  const today = "2026-03-11";
+  const dated = [
+    makeIssue({ id: "late", due_date: "2026-03-10" }),
+    makeIssue({ id: "now", due_date: "2026-03-11" }),
+    makeIssue({ id: "sunday", due_date: "2026-03-15" }),
+    makeIssue({ id: "later", due_date: "2026-03-30" }),
+    makeIssue({ id: "undated", due_date: null }),
+  ];
+  const ids = (filters: Partial<IssueFilters>) =>
+    filterIssues(dated, { ...NO_FILTER, today, ...filters }).map((i) => i.id);
+
+  it("ORs the buckets", () => {
+    expect(ids({ dueDateFilters: ["overdue"] })).toEqual(["late"]);
+    expect(ids({ dueDateFilters: ["this_week"] })).toEqual(["late", "now", "sunday"]);
+    expect(ids({ dueDateFilters: ["today", "none"] })).toEqual(["now", "undated"]);
+  });
+
+  it("keeps undated issues under 'is not'", () => {
+    expect(ids({ dueDateFilters: ["overdue"], negatedFilters: ["dueDate"] })).toEqual([
+      "now", "sunday", "later", "undated",
+    ]);
+  });
+});
+
+describe("advanced filter", () => {
+  const ids = (advancedFilter: ReturnType<typeof createFilterGroup>, context: Partial<IssueFilters> = {}) =>
+    filterIssues(issues, { ...NO_FILTER, advancedFilter, ...context }).map((i) => i.id);
+
+  it("ORs across fields inside an any group", () => {
+    const tree = createFilterGroup("all", [
+      createFilterCondition("project", ["p-1", "none"]),
+      createFilterGroup("any", [
+        createFilterCondition("priority", ["urgent"]),
+        createFilterCondition("status", ["done"]),
+      ]),
+    ]);
+    expect(ids(tree)).toEqual(["3", "4"]);
+  });
+
+  it("negates one condition and keeps empty values", () => {
+    expect(ids(createFilterGroup("all", [createFilterCondition("assignee", ["member:u-1"], true)]))).toEqual([
+      "2", "3", "4",
+    ]);
+    expect(ids(createFilterGroup("all", [createFilterCondition("assignee", ["none"])]))).toEqual(["3"]);
+  });
+
+  it("drops empty and unanswerable conditions instead of matching everything", () => {
+    const tree = createFilterGroup("any", [
+      createFilterCondition("status", ["in_progress"]),
+      createFilterCondition("label"),
+      // No viewer context on this surface: the relation cannot be answered.
+      createFilterCondition("relation", ["assigned"]),
+    ]);
+    expect(ids(tree)).toEqual(["2"]);
+    expect(ids(createFilterGroup("any", [createFilterCondition("label")]))).toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("evaluates relations once the viewer is known", () => {
+    const tree = createFilterGroup("any", [
+      createFilterCondition("relation", ["my_agents"]),
+      createFilterCondition("creator", ["member:u-2"]),
+    ]);
+    expect(ids(tree, { relationContext: { userId: "u-1", myAgentIds: new Set(["a-1"]) } })).toEqual(["2", "3"]);
+  });
+
+  it("is ANDed with the simple filters", () => {
+    const tree = createFilterGroup("all", [createFilterCondition("project", ["p-1"])]);
+    expect(ids(tree, { priorityFilters: ["high"] })).toEqual(["1"]);
   });
 });

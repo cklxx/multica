@@ -3,6 +3,7 @@
 import { cloneElement, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
+  CalendarClock,
   CalendarDays,
   ChartGantt,
   ChevronDown,
@@ -14,6 +15,8 @@ import {
   FolderKanban,
   FolderMinus,
   List,
+  ListTree,
+  Search,
   SignalHigh,
   SlidersHorizontal,
   Tag,
@@ -110,6 +113,14 @@ import {
   type ViewMode,
 } from "@multica/core/issues/stores/view-store";
 import { useViewStore, useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
+import {
+  advancedFilterSignature,
+  countAdvancedConditions,
+  DUE_DATE_FILTERS,
+  NEGATABLE_FILTER_DIMENSIONS,
+  simpleFieldValues,
+  type AdvancedFilterGroup,
+} from "@multica/core/issues/stores/filter-tree";
 import { useAuthStore } from "@multica/core/auth";
 import { actorFilterKey, type IssueViewBaseline } from "@multica/core/issue-views/baseline";
 import { addDaysDateOnly, dateOnlyToLocalDate, formatDateOnly, toDateOnly, todayDateOnly } from "@multica/core/issues/date";
@@ -122,6 +133,15 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { FILTER_ITEM_CLASS, HoverCheck } from "../../common/hover-check";
 import { TableColumnPicker } from "./table-view";
 import { DisplayChip, SortDirectionButton } from "./display-parts";
+import { AdvancedFilterPanel, stopMenuSearchKeys } from "./advanced-filter-panel";
+import {
+  DUE_DATE_LABEL_KEY,
+  FILTER_FIELD_ICONS,
+  matchesFilterQuery,
+  toggleSimpleFilterValue,
+  useFilterFieldLabels,
+  useFilterValueCatalog,
+} from "./filter-field-options";
 
 type LocalDateRange = {
   from: Date | undefined;
@@ -142,8 +162,10 @@ function getActiveFilterCount(
     projectStatusFilters: ProjectStatus[];
     labelFilters: string[];
     relationFilters: string[];
+    dueDateFilters: string[];
     negatedFilters: NegatableFilterDimension[];
     propertyFilters?: Record<string, PropertyFilterValue[]>;
+    advancedFilter?: AdvancedFilterGroup | null;
     dateFilter?: IssueDateFilter | null;
   },
   // Inside a saved view only the user's additions on top of the view's own
@@ -173,6 +195,14 @@ function getActiveFilterCount(
   if (delta(state.projectStatusFilters, fixedFor("projectStatus", baseline?.projectStatus)) > 0) count++;
   if (delta(state.labelFilters, fixedFor("label", baseline?.label)) > 0) count++;
   if (delta(state.relationFilters, fixedFor("relation", baseline?.relation)) > 0) count++;
+  if (delta(state.dueDateFilters, fixedFor("dueDate", baseline?.dueDate)) > 0) count++;
+  const advancedFilter = state.advancedFilter ?? null;
+  if (
+    !baseline ||
+    advancedFilterSignature(advancedFilter) !== advancedFilterSignature(baseline.raw.advancedFilter)
+  ) {
+    count += countAdvancedConditions(advancedFilter);
+  }
   for (const [id, selected] of Object.entries(state.propertyFilters ?? {})) {
     // Property members can be operator objects — compare through their
     // canonical keys so a view-fixed operator still cancels out.
@@ -1293,6 +1323,7 @@ export function IssueFilterMenu({
   leadingSections,
   align = "end",
   showRelation = true,
+  hiddenFields,
   modifiedKeys,
   summaryTitle,
 }: {
@@ -1303,6 +1334,8 @@ export function IssueFilterMenu({
   tooltip?: string;
   /** Offer "relation to me". A surface already scoped to me hides it. */
   showRelation?: boolean;
+  /** Fields the scope already fixes, left out of search and advanced mode. */
+  hiddenFields?: readonly NegatableFilterDimension[];
   /** Chip keys whose condition differs from the open saved view. */
   modifiedKeys?: ReadonlySet<string>;
   /** With active filters, hovering the trigger shows them as sentences under
@@ -1337,10 +1370,26 @@ export function IssueFilterMenu({
   const projectStatusFilters = useViewStore((s) => s.projectStatusFilters);
   const labelFilters = useViewStore((s) => s.labelFilters);
   const relationFilters = useViewStore((s) => s.relationFilters);
+  const dueDateFilters = useViewStore((s) => s.dueDateFilters);
+  const advancedFilter = useViewStore((s) => s.advancedFilter);
   const negatedFilters = useViewStore((s) => s.negatedFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const viewStoreApi = useViewStoreApi();
   const act = viewStoreApi.getState();
+  const advancedMode = advancedFilter !== null;
+  const [panelOpen, setPanelOpen] = useState(false);
+  // Leaving advanced mode from inside the panel unmounts it with no close
+  // event; the next entry must start closed until asked.
+  useEffect(() => {
+    if (!advancedMode) setPanelOpen(false);
+  }, [advancedMode]);
+  const [search, setSearch] = useState("");
+  const query = search.trim().toLowerCase();
+  const fieldLabels = useFilterFieldLabels();
+  const valueCatalog = useFilterValueCatalog(query.length > 0);
+  const searchFields = NEGATABLE_FILTER_DIMENSIONS.filter(
+    (field) => (showRelation || field !== "relation") && !hiddenFields?.includes(field),
+  );
   const wsId = useWorkspaceId();
   const statusOptions = useStatusOptions(wsId);
   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(wsId));
@@ -1374,7 +1423,9 @@ export function IssueFilterMenu({
         projectStatusFilters,
         labelFilters,
         relationFilters: showRelation ? relationFilters : [],
+        dueDateFilters,
         negatedFilters,
+        advancedFilter,
         dateFilter: showDateFilter ? dateFilter : null,
       },
       viewBaseline,
@@ -1401,10 +1452,19 @@ export function IssueFilterMenu({
   // opens, so a row never jumps out from under the pointer mid-edit.
   const inPass = (key: string, pass: "active" | "rest") =>
     activeKeys.has(key) === (pass === "active");
-  const renderFieldSections = (pass: "active" | "rest") => (
+  const sectionLabel = (key: string) =>
+    key === "date"
+      ? t(($) => $.filters.section_date)
+      : key.startsWith("property:")
+        ? filterableProperties.find((p) => `property:${p.id}` === key)?.name ?? ""
+        : fieldLabels[key as NegatableFilterDimension] ?? "";
+  const renderFieldSections = (pass: "active" | "rest" | "search") => {
+    const show = (key: string) =>
+      pass === "search" ? matchesFilterQuery(sectionLabel(key), query) : inPass(key, pass);
+    return (
           <>
             {/* Status */}
-            {inPass("status", pass) && (
+            {show("status") && (
             <DropdownMenuSub
               onOpenChange={(open) =>
                 onTableFacetChange?.(open ? { kind: "status" } : null)
@@ -1458,7 +1518,7 @@ export function IssueFilterMenu({
             )}
 
             {/* Priority */}
-            {inPass("priority", pass) && (
+            {show("priority") && (
             <DropdownMenuSub
               onOpenChange={(open) =>
                 onTableFacetChange?.(open ? { kind: "priority" } : null)
@@ -1499,7 +1559,7 @@ export function IssueFilterMenu({
             </DropdownMenuSub>
             )}
 
-            {showDateFilter && onDateFilterChange && inPass("date", pass) && (
+            {showDateFilter && onDateFilterChange && show("date") && (
               <DropdownMenuSub>
                 <DropdownMenuSubTrigger>
                   <CalendarDays className="size-3.5" />
@@ -1520,7 +1580,7 @@ export function IssueFilterMenu({
             )}
 
             {/* Assignee */}
-            {inPass("assignee", pass) && (
+            {show("assignee") && (
             <DropdownMenuSub
               onOpenChange={(open) =>
                 onTableFacetChange?.(open ? { kind: "assignee" } : null)
@@ -1550,7 +1610,7 @@ export function IssueFilterMenu({
             )}
 
             {/* Creator */}
-            {inPass("creator", pass) && (
+            {show("creator") && (
             <DropdownMenuSub
               onOpenChange={(open) =>
                 onTableFacetChange?.(open ? { kind: "creator" } : null)
@@ -1577,7 +1637,7 @@ export function IssueFilterMenu({
 
             {/* Relation to me — OR across assigned / created / my agents,
                 which no single actor dimension can express. */}
-            {showRelation && inPass("relation", pass) && (
+            {showRelation && show("relation") && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <CircleUser className="size-3.5" />
@@ -1610,7 +1670,7 @@ export function IssueFilterMenu({
             )}
 
             {/* Project */}
-            {inPass("project", pass) && (
+            {show("project") && (
             <DropdownMenuSub
               onOpenChange={(open) =>
                 onTableFacetChange?.(open ? { kind: "project" } : null)
@@ -1641,7 +1701,7 @@ export function IssueFilterMenu({
             {/* Project status — a dimension of its own next to Project:
                 "everything in the projects that are in progress", without
                 naming them one by one. */}
-            {inPass("projectStatus", pass) && (
+            {show("projectStatus") && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <CircleDashed className="size-3.5" />
@@ -1661,7 +1721,7 @@ export function IssueFilterMenu({
             )}
 
             {/* Label */}
-            {inPass("label", pass) && (
+            {show("label") && (
             <DropdownMenuSub
               onOpenChange={(open) =>
                 onTableFacetChange?.(open ? { kind: "label" } : null)
@@ -1685,9 +1745,42 @@ export function IssueFilterMenu({
             </DropdownMenuSub>
             )}
 
+            {/* Due date — relative buckets, so a saved view keeps meaning
+                "overdue" tomorrow. */}
+            {show("dueDate") && (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <CalendarClock className="size-3.5" />
+                <span className="flex-1">{t(($) => $.filters.section_due_date)}</span>
+                {triggerValue("dueDate")}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-auto min-w-52">
+                <FilterOperatorSwitch dimension="dueDate" />
+                {DUE_DATE_FILTERS.map((bucket) => {
+                  const checked = dueDateFilters.includes(bucket);
+                  const fixed = viewBaseline?.dueDate.has(bucket) === true;
+                  return (
+                    <DropdownMenuCheckboxItem
+                      key={bucket}
+                      checked={checked}
+                      disabled={fixed}
+                      title={fixed ? fixedTitle : undefined}
+                      onCheckedChange={() => act.toggleDueDateFilter(bucket)}
+                      className={FILTER_ITEM_CLASS}
+                    >
+                      <HoverCheck checked={checked} />
+                      <CalendarClock className="size-3.5 text-muted-foreground" />
+                      {t(($) => $.filters[DUE_DATE_LABEL_KEY[bucket]])}
+                    </DropdownMenuCheckboxItem>
+                  );
+                })}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            )}
+
             {/* Custom properties — one sub per filterable definition */}
-            {pass === "rest" && filterableProperties.some((p) => inPass(`property:${p.id}`, pass)) && <DropdownMenuSeparator />}
-            {filterableProperties.filter((property) => inPass(`property:${property.id}`, pass)).map((property) => {
+            {pass === "rest" && filterableProperties.some((p) => show(`property:${p.id}`)) && <DropdownMenuSeparator />}
+            {filterableProperties.filter((property) => show(`property:${property.id}`)).map((property) => {
               const selected = propertyFilters[property.id] ?? [];
               return (
                 <DropdownMenuSub
@@ -1725,13 +1818,178 @@ export function IssueFilterMenu({
             })}
 
           </>
-  );
+    );
+  };
 
   // Base UI's render-prop merges its own ref with ours, so cloning the
   // caller's element only adds the ref we need for rect capture.
   const anchoredTrigger = freezeAnchor
     ? cloneElement(trigger, { ref: triggerRef } as Partial<React.HTMLAttributes<HTMLElement>>)
     : trigger;
+
+  // Search: matching fields keep their submenus; matching values become
+  // one-click rows that read as the condition they add.
+  const simpleFields = {
+    statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters,
+    projectFilters, includeNoProject, projectStatusFilters, labelFilters, relationFilters,
+    dueDateFilters,
+  };
+  const negatedSet = new Set(negatedFilters);
+  const fixedValue = (field: NegatableFilterDimension, value: string) => {
+    if (!viewBaseline) return false;
+    if (value === "none" && field === "assignee") return viewBaseline.includeNoAssignee;
+    if (value === "none" && field === "project") return viewBaseline.includeNoProject;
+    return viewBaseline[field].has(value);
+  };
+  const sectionKeys = [
+    ...searchFields.filter((field) => field !== "relation" || showRelation),
+    ...(showDateFilter ? ["date"] : []),
+    ...filterableProperties.map((p) => `property:${p.id}`),
+  ];
+  const fieldHits = query ? sectionKeys.filter((key) => matchesFilterQuery(sectionLabel(key), query)) : [];
+  const valueHits = query
+    ? searchFields
+        .flatMap((field) =>
+          valueCatalog(field)
+            .filter((option) => matchesFilterQuery(option.label, query))
+            .map((option) => ({ field, option })),
+        )
+        .slice(0, 50)
+    : [];
+
+  const menuBody = query ? (
+    <>
+      {fieldHits.length > 0 && (
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>{t(($) => $.filters.search_fields)}</DropdownMenuLabel>
+          {renderFieldSections("search")}
+        </DropdownMenuGroup>
+      )}
+      {fieldHits.length > 0 && valueHits.length > 0 && <DropdownMenuSeparator />}
+      {valueHits.length > 0 && (
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>{t(($) => $.filters.search_values)}</DropdownMenuLabel>
+          {valueHits.map(({ field, option }) => {
+            const checked = simpleFieldValues(simpleFields, field).includes(option.value);
+            const fixed = fixedValue(field, option.value);
+            const FieldIcon = FILTER_FIELD_ICONS[field];
+            return (
+              <DropdownMenuCheckboxItem
+                key={`${field}:${option.value}`}
+                checked={checked}
+                disabled={fixed}
+                title={fixed ? fixedTitle : undefined}
+                onCheckedChange={() => toggleSimpleFilterValue(act, field, option.value)}
+                className={FILTER_ITEM_CLASS}
+              >
+                <HoverCheck checked={checked} />
+                <FieldIcon className="size-3.5 text-muted-foreground" />
+                <span className="shrink-0 text-muted-foreground">{fieldLabels[field]}</span>
+                <FilterOperator negated={negatedSet.has(field)} />
+                {option.icon}
+                <span className="truncate">{option.label}</span>
+              </DropdownMenuCheckboxItem>
+            );
+          })}
+        </DropdownMenuGroup>
+      )}
+      {fieldHits.length === 0 && valueHits.length === 0 && (
+        <div className="px-2 py-3 text-center text-body text-muted-foreground">
+          {t(($) => $.filters.no_results)}
+        </div>
+      )}
+    </>
+  ) : (
+    <>
+      {leadingSections && (
+        <>
+          {leadingSections}
+          <DropdownMenuSeparator />
+        </>
+      )}
+      {activeKeys.size > 0 && (
+        <>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>{t(($) => $.filters.active_section)}</DropdownMenuLabel>
+            {renderFieldSections("active")}
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+        </>
+      )}
+      {renderFieldSections("rest")}
+
+      <DropdownMenuSeparator />
+      <DropdownMenuItem
+        onClick={() => {
+          act.enterAdvancedFilter();
+          setPanelOpen(true);
+        }}
+      >
+        <ListTree className="size-3.5" />
+        {t(($) => $.filters.advanced_switch)}
+        <span className="ml-auto pl-4 text-caption text-muted-foreground">
+          {t(($) => $.filters.advanced_switch_hint)}
+        </span>
+      </DropdownMenuItem>
+
+      {/* Reset */}
+      {hasActiveFilters && (
+        <DropdownMenuItem
+          onClick={() => {
+            if (viewBaseline) {
+              // Inside a saved view, reset returns to the view's own
+              // conditions, never to nothing.
+              act.resetFiltersTo(viewBaseline.raw);
+            } else {
+              act.clearFilters();
+            }
+            onDateFilterChange?.(null);
+          }}
+        >
+          {t(($) => $.filters.reset)}
+        </DropdownMenuItem>
+      )}
+    </>
+  );
+
+  const tooltipContent =
+    summaryTitle && chips.length > 0 ? (
+      <TooltipContent side="bottom" align="start" className="max-w-sm">
+        <FilterSummary title={summaryTitle} chips={chips} modifiedKeys={modifiedKeys} />
+      </TooltipContent>
+    ) : (
+      <TooltipContent side="bottom">{tooltip}</TooltipContent>
+    );
+  const withTooltip = !!(summaryTitle || tooltip);
+
+  // Advanced mode: the same trigger opens the rule panel instead of the menu.
+  if (advancedMode) {
+    return (
+      <Popover
+        open={panelOpen}
+        onOpenChange={(open) => {
+          setPanelOpen(open);
+          onOpenChange?.(open);
+        }}
+      >
+        {withTooltip ? (
+          <Tooltip disabled={(!tooltip && chips.length === 0) || panelOpen}>
+            <PopoverTrigger render={<TooltipTrigger render={trigger} />} />
+            {tooltipContent}
+          </Tooltip>
+        ) : (
+          <PopoverTrigger render={trigger} />
+        )}
+        <PopoverContent
+          align={align}
+          className="w-[680px] max-w-[calc(100vw-2rem)] gap-0 p-0"
+          data-testid="advanced-filter-panel"
+        >
+          <AdvancedFilterPanel fields={searchFields} />
+        </PopoverContent>
+      </Popover>
+    );
+  }
 
   return (
     <DropdownMenu
@@ -1745,64 +2003,38 @@ export function IssueFilterMenu({
           }
         }
         setActiveAtOpen(open ? new Set(chipByKey.keys()) : null);
-        if (!open) onTableFacetChange?.(null);
+        if (!open) {
+          setSearch("");
+          onTableFacetChange?.(null);
+        }
         onOpenChange?.(open);
       }}
     >
       {/* One tree for both bodies: swapping wrappers when the first filter
           lands would remount the trigger and strand the open menu's anchor. */}
-      {summaryTitle || tooltip ? (
+      {withTooltip ? (
         <Tooltip disabled={(!tooltip && chips.length === 0) || (!!summaryTitle && activeAtOpen !== null)}>
           <DropdownMenuTrigger render={<TooltipTrigger render={anchoredTrigger} />} />
-          {summaryTitle && chips.length > 0 ? (
-            <TooltipContent side="bottom" align="start" className="max-w-sm">
-              <FilterSummary title={summaryTitle} chips={chips} modifiedKeys={modifiedKeys} />
-            </TooltipContent>
-          ) : (
-            <TooltipContent side="bottom">{tooltip}</TooltipContent>
-          )}
+          {tooltipContent}
         </Tooltip>
       ) : (
         <DropdownMenuTrigger render={anchoredTrigger} />
       )}
-          <DropdownMenuContent align={align} className="w-auto" anchor={frozenAnchor ?? undefined}>
-            {leadingSections && (
-              <>
-                {leadingSections}
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {activeKeys.size > 0 && (
-              <>
-                <DropdownMenuGroup>
-                  <DropdownMenuLabel>{t(($) => $.filters.active_section)}</DropdownMenuLabel>
-                  {renderFieldSections("active")}
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {renderFieldSections("rest")}
-
-            {/* Reset */}
-            {hasActiveFilters && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => {
-                    if (viewBaseline) {
-                      // Inside a saved view, reset returns to the view's own
-                      // conditions, never to nothing.
-                      act.resetFiltersTo(viewBaseline.raw);
-                    } else {
-                      act.clearFilters();
-                    }
-                    onDateFilterChange?.(null);
-                  }}
-                >
-                  {t(($) => $.filters.reset)}
-                </DropdownMenuItem>
-              </>
-            )}
+          <DropdownMenuContent align={align} className="w-auto min-w-64 p-0" anchor={frozenAnchor ?? undefined}>
+            <div data-filter-search className="flex items-center gap-1.5 border-b border-foreground/5 px-2.5 py-2">
+              <Search className="size-3.5 shrink-0 text-muted-foreground" />
+              <input
+                type="text"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={stopMenuSearchKeys}
+                placeholder={t(($) => $.filters.search_placeholder)}
+                aria-label={t(($) => $.filters.search_placeholder)}
+                className="w-full bg-transparent text-body outline-none placeholder:text-muted-foreground"
+                autoFocus
+              />
+            </div>
+            <div className="max-h-[min(70vh,36rem)] overflow-y-auto p-1">{menuBody}</div>
           </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1867,6 +2099,8 @@ export function IssueDisplayControls({
   const labelFilters = useViewStore((s) => s.labelFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
   const relationFilters = useViewStore((s) => s.relationFilters);
+  const dueDateFilters = useViewStore((s) => s.dueDateFilters);
+  const advancedFilter = useViewStore((s) => s.advancedFilter);
   const negatedFilters = useViewStore((s) => s.negatedFilters);
   const cardPropertyIds = useViewStore((s) => s.cardPropertyIds);
   const sortBy = useViewStore((s) => s.sortBy);
@@ -1944,7 +2178,9 @@ export function IssueDisplayControls({
       projectStatusFilters,
       labelFilters,
       relationFilters,
+      dueDateFilters,
       negatedFilters,
+      advancedFilter,
       dateFilter: showDateFilter ? dateFilter : null,
     },
     viewBaseline,
