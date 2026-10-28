@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createStore } from "zustand/vanilla";
+import { createStore, type StoreApi } from "zustand/vanilla";
 import { setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
 import { createAuthStore, registerAuthStore } from "@multica/core/auth";
@@ -27,7 +27,7 @@ vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: () => null,
 }));
 
-function renderFilterMenu(setup?: (store: ReturnType<typeof createStore<IssueViewState>>) => void) {
+function renderFilterMenu(setup?: (store: StoreApi<IssueViewState>) => void) {
   setApiInstance({
     listIssueStatuses: async () => ({ statuses: [], categories: [], total: 0 }),
     listProperties: async () => ({ properties: [] }),
