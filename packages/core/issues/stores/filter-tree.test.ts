@@ -12,6 +12,7 @@ import {
   pruneAdvancedFilter,
   sanitizeAdvancedFilter,
   simpleFromAdvancedFilter,
+  statusColumnFilter,
   withoutAdvancedFilterFields,
   type SimpleFilterFields,
 } from "./filter-tree";
@@ -184,5 +185,43 @@ describe("sanitizeAdvancedFilter", () => {
   it("rejects anything that is not a group", () => {
     expect(sanitizeAdvancedFilter(null)).toBeNull();
     expect(sanitizeAdvancedFilter({ type: "condition", field: "status", values: ["x"] })).toBeNull();
+  });
+});
+
+describe("statusColumnFilter", () => {
+  const hidden = ["cancelled", "done"];
+
+  it("keeps the simple status filter, which the tree is ANDed with", () => {
+    const tree = createFilterGroup("all", [createFilterCondition("status", ["todo"])]);
+    expect(statusColumnFilter(["cancelled"], false, tree, hidden)).toEqual({
+      statuses: ["cancelled"],
+      negated: false,
+      hiddenStatuses: hidden,
+    });
+  });
+
+  it("picks columns from a status every row must meet", () => {
+    const tree = createFilterGroup("all", [
+      createFilterCondition("status", ["cancelled"], true),
+      createFilterGroup("any", [createFilterCondition("priority", ["urgent"])]),
+    ]);
+    expect(statusColumnFilter([], false, tree, hidden)).toEqual({
+      statuses: ["cancelled"],
+      negated: true,
+      hiddenStatuses: hidden,
+    });
+  });
+
+  it("un-hides a status a looser tree names, without narrowing", () => {
+    const tree = createFilterGroup("any", [
+      createFilterCondition("status", ["cancelled"]),
+      createFilterCondition("status", ["done"], true),
+      createFilterCondition("priority", ["urgent"]),
+    ]);
+    expect(statusColumnFilter([], false, tree, hidden)).toEqual({
+      statuses: [],
+      negated: false,
+      hiddenStatuses: ["done"],
+    });
   });
 });

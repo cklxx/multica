@@ -136,4 +136,35 @@ test.describe("Issue filter: search, due date, advanced", () => {
     await expect(page.getByRole("button", { name: "1 filter" })).toBeVisible();
     await expect.poll(() => visibleIssueTitles(page, all)).toEqual([lowLate, mediumLate, urgentLate].sort());
   });
+
+  test("advanced mode shows and clears property filters", async ({ page }) => {
+    const property = await api.createProperty(`Estimate ${suffix}`, "number");
+    await page.reload();
+    await expect.poll(() => visibleIssueTitles(page, all)).toEqual([...all].sort());
+
+    await page.getByRole("button", { name: "Filter", exact: true }).click();
+    await page.getByRole("menuitem", { name: /Switch to advanced filter/ }).click();
+    const panel = page.getByTestId("advanced-filter-panel");
+    await panel.getByRole("button", { name: "Add condition", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Priority" }).click();
+    await panel.getByRole("button", { name: "Values" }).first().click();
+    await page.getByRole("menuitemcheckbox", { name: "Urgent" }).click();
+    await page.keyboard.press("Escape");
+
+    await panel.getByRole("button", { name: "Add property filter" }).click();
+    await page.getByRole("menuitem", { name: property.name }).click();
+    await page.getByRole("menuitemcheckbox", { name: "No value" }).click();
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+
+    const row = panel.getByTestId("advanced-property-row");
+    await expect(row).toContainText(property.name);
+    await expect.poll(() => visibleIssueTitles(page, all)).toEqual([urgentLate, urgentUndated].sort());
+    await shot(page, "05-advanced-properties");
+
+    await panel.getByRole("button", { name: "Clear all" }).click();
+    await expect(row).toBeHidden();
+    await expect(panel.getByRole("button", { name: "Clear all" })).toBeDisabled();
+    await expect.poll(() => visibleIssueTitles(page, all)).toEqual([...all].sort());
+  });
 });

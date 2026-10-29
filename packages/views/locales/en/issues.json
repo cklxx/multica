@@ -231,6 +231,8 @@
     "advanced_or": "or",
     "advanced_add_condition": "Add condition",
     "advanced_add_group": "Add condition group",
+    "advanced_add_property": "Add property filter",
+    "advanced_properties_title": "Property filters, always applied on top of the rules",
     "advanced_values_placeholder": "Select values…",
     "advanced_field_label": "Field",
     "advanced_values_label": "Values",

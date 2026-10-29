@@ -226,6 +226,8 @@
     "advanced_or": "또는",
     "advanced_add_condition": "조건 추가",
     "advanced_add_group": "조건 그룹 추가",
+    "advanced_add_property": "속성 필터 추가",
+    "advanced_properties_title": "속성 필터 (조건과 함께 항상 적용)",
     "advanced_values_placeholder": "값 선택…",
     "advanced_field_label": "필드",
     "advanced_values_label": "값",

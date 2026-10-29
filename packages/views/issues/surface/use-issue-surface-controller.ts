@@ -24,6 +24,7 @@ import {
   advancedFilterToTableQuery,
   advancedFilterUsesField,
   FILTER_DIMENSION_TABLE_FIELD,
+  statusColumnFilter,
   withoutAdvancedFilterFields,
 } from "@multica/core/issues/stores/filter-tree";
 import type { IssueSortParam } from "@multica/core/issues/queries";
@@ -267,11 +268,6 @@ export function useIssueSurfaceController({
   const hiddenStatusKeys = useViewStore((s) => s.hiddenStatuses);
   const catalog = useIssueStatuses(wsId);
   const statusNegated = negatedFilters.includes("status");
-  const { workflow: projectWorkflow } = useColumnWorkflow(
-    wsId,
-    projectId,
-    statusFilters.length > 0 && !statusNegated,
-  );
   const [tableSearch, setTableSearch] = useState("");
   // A "my issues" surface already scopes by relation; the menu hides the
   // dimension there, and a persisted value must not silently narrow it.
@@ -285,6 +281,16 @@ export function useIssueSurfaceController({
         ...(scope.type === "project" ? (["project"] as const) : []),
       ]),
     [scope.type, storedAdvancedFilter],
+  );
+  // Columns follow a status the tree requires as they follow the simple one.
+  const columnStatus = useMemo(
+    () => statusColumnFilter(statusFilters, statusNegated, advancedFilter, hiddenStatusKeys),
+    [advancedFilter, hiddenStatusKeys, statusFilters, statusNegated],
+  );
+  const { workflow: projectWorkflow } = useColumnWorkflow(
+    wsId,
+    projectId,
+    columnStatus.statuses.length > 0 && !columnStatus.negated,
   );
   const advancedTableFilter = useMemo(
     () => advancedFilterToTableQuery(advancedFilter),
@@ -407,10 +413,10 @@ export function useIssueSurfaceController({
   const statusColumnsForFilters = useMemo(
     // Exclusion needs no category: it only removes the listed keys.
     () =>
-      statusNegated
+      columnStatus.negated
         ? ({ state: "resolved", columns: new Set<IssueStatus>() } as const)
-        : statusFilterColumns(statusFilters, catalog),
-    [catalog, statusFilters, statusNegated],
+        : statusFilterColumns(columnStatus.statuses, catalog),
+    [catalog, columnStatus],
   );
   /**
    * A custom-status filter cannot be routed until the catalog answers. While it
@@ -437,10 +443,10 @@ export function useIssueSurfaceController({
     () => {
       const visible = workflowColumns(
         visibleStatusKeys(
-          statusFilters,
-          hiddenStatusKeys,
+          columnStatus.statuses,
+          columnStatus.hiddenStatuses,
           catalog,
-          statusNegated,
+          columnStatus.negated,
         ),
         projectWorkflow,
       );
@@ -450,11 +456,9 @@ export function useIssueSurfaceController({
     },
     [
       effectiveViewMode,
-      hiddenStatusKeys,
       listCollapsedStatuses,
       catalog,
-      statusFilters,
-      statusNegated,
+      columnStatus,
       projectWorkflow,
     ],
   );

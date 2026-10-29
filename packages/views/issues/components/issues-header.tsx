@@ -133,7 +133,14 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { FILTER_ITEM_CLASS, HoverCheck } from "../../common/hover-check";
 import { TableColumnPicker } from "./table-view";
 import { DisplayChip, SortDirectionButton } from "./display-parts";
-import { AdvancedFilterPanel, stopMenuSearchKeys } from "./advanced-filter-panel";
+import {
+  AddButton,
+  AdvancedFilterPanel,
+  CONNECTOR_CLASS,
+  RowActions,
+  stopMenuSearchKeys,
+  type AdvancedPanelProperties,
+} from "./advanced-filter-panel";
 import {
   DUE_DATE_LABEL_KEY,
   FILTER_FIELD_ICONS,
@@ -1058,6 +1065,136 @@ function PropertyFilterOptions({
   );
 }
 
+interface PropertyFilterEditor {
+  counts: (propertyId: string) => Map<string, number> | undefined;
+  selected: (propertyId: string) => PropertyFilterValue[];
+  toggle: (propertyId: string, optionId: string) => void;
+  setValues: (propertyId: string, values: PropertyFilterValue[]) => void;
+  fixedIds: (propertyId: string) => Set<string> | undefined;
+  fixedTitle?: string;
+  onFacetChange?: (facet: IssueTableFacetSpec | null) => void;
+}
+
+function EditorPropertyOptions({ property, editor }: { property: IssueProperty; editor: PropertyFilterEditor }) {
+  return (
+    <PropertyFilterOptions
+      property={property}
+      counts={editor.counts(property.id)}
+      selected={editor.selected(property.id)}
+      onToggle={(optionId) => editor.toggle(property.id, optionId)}
+      onSetValues={(values) => editor.setValues(property.id, values)}
+      fixedIds={editor.fixedIds(property.id)}
+      fixedTitle={editor.fixedTitle}
+    />
+  );
+}
+
+function PropertyFieldIcon({ property }: { property: IssueProperty }) {
+  return property.icon ? (
+    <PropertyIcon property={property} className="size-3.5 text-caption" />
+  ) : (
+    <SlidersHorizontal className="size-3.5" />
+  );
+}
+
+/** Custom-property filters in the advanced panel: always ANDed with the
+ *  rules, edited with the simple menu's own options. */
+function AdvancedPropertyRows({
+  properties,
+  chipByKey,
+  editor,
+  onRemove,
+}: {
+  properties: IssueProperty[];
+  chipByKey: ReadonlyMap<string, FilterChip>;
+  editor: PropertyFilterEditor;
+  onRemove: (propertyId: string) => void;
+}) {
+  const { t } = useT("issues");
+  return (
+    <div className="mt-1 flex flex-col gap-1.5 border-t border-border pt-2">
+      <p className="text-caption text-muted-foreground">{t(($) => $.filters.advanced_properties_title)}</p>
+      {properties.map((property, index) => {
+        const chip = chipByKey.get(`property:${property.id}`);
+        return (
+          <div key={property.id} className="flex items-start gap-1.5" data-testid="advanced-property-row">
+            <span className={CONNECTOR_CLASS}>
+              {index === 0 ? t(($) => $.filters.advanced_where) : t(($) => $.filters.advanced_and)}
+            </span>
+            <span className="flex h-7 w-36 shrink-0 items-center gap-1.5 rounded-md border border-input px-2 text-caption text-muted-foreground dark:bg-input/30">
+              <PropertyFieldIcon property={property} />
+              <span className="truncate text-foreground">{property.name}</span>
+            </span>
+            <DropdownMenu
+              onOpenChange={(open) =>
+                editor.onFacetChange?.(open ? { kind: "property", property_id: property.id } : null)
+              }
+            >
+              <DropdownMenuTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label={t(($) => $.filters.advanced_values_label)}
+                    className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md border border-input px-2 text-left text-caption outline-none hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+                  />
+                }
+              >
+                {chip?.valueIcons}
+                <span className="min-w-0 flex-1 truncate font-medium">
+                  {chip?.value ?? editor.selected(property.id).length}
+                </span>
+                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-auto min-w-44 p-1">
+                <EditorPropertyOptions property={property} editor={editor} />
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <RowActions>
+              <DropdownMenuItem variant="destructive" onClick={() => onRemove(property.id)}>
+                {t(($) => $.filters.advanced_delete)}
+              </DropdownMenuItem>
+            </RowActions>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AddPropertyFilterMenu({
+  properties,
+  editor,
+}: {
+  properties: IssueProperty[];
+  editor: PropertyFilterEditor;
+}) {
+  const { t } = useT("issues");
+  if (properties.length === 0) return null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger render={<AddButton>{t(($) => $.filters.advanced_add_property)}</AddButton>} />
+      <DropdownMenuContent align="start" className="w-52">
+        {properties.map((property) => (
+          <DropdownMenuSub
+            key={property.id}
+            onOpenChange={(open) =>
+              editor.onFacetChange?.(open ? { kind: "property", property_id: property.id } : null)
+            }
+          >
+            <DropdownMenuSubTrigger>
+              <PropertyFieldIcon property={property} />
+              <span className="flex-1 truncate">{property.name}</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-auto min-w-44 p-1">
+              <EditorPropertyOptions property={property} editor={editor} />
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 // Date sub-menu content
 
 function DateSubContent({
@@ -1964,6 +2101,35 @@ export function IssueFilterMenu({
 
   // Advanced mode: the same trigger opens the rule panel instead of the menu.
   if (advancedMode) {
+    const propertyEditor: PropertyFilterEditor = {
+      counts: (id) => counts.property.get(id),
+      selected: (id) => propertyFilters[id] ?? [],
+      toggle: act.togglePropertyFilter,
+      setValues: act.setPropertyFilterValues,
+      fixedIds: (id) => viewBaseline?.property.get(id),
+      fixedTitle,
+      onFacetChange: onTableFacetChange,
+    };
+    const activeProperties = filterableProperties.filter((p) => p.id in effectivePropertyFilters);
+    // A saved view's own values survive, as with the chip's remove.
+    const removeProperty = (id: string) => {
+      const chip = chipByKey.get(`property:${id}`);
+      if (chip) chip.onRemove();
+      else act.setPropertyFilterValues(id, []);
+    };
+    const panelProperties: AdvancedPanelProperties = {
+      rows: (
+        <AdvancedPropertyRows
+          properties={activeProperties}
+          chipByKey={chipByKey}
+          editor={propertyEditor}
+          onRemove={removeProperty}
+        />
+      ),
+      addMenu: <AddPropertyFilterMenu properties={filterableProperties} editor={propertyEditor} />,
+      active: activeProperties.length > 0,
+      onClear: () => activeProperties.forEach((p) => removeProperty(p.id)),
+    };
     return (
       <Popover
         open={panelOpen}
@@ -1985,7 +2151,7 @@ export function IssueFilterMenu({
           className="w-[680px] max-w-[calc(100vw-2rem)] gap-0 p-0"
           data-testid="advanced-filter-panel"
         >
-          <AdvancedFilterPanel fields={searchFields} />
+          <AdvancedFilterPanel fields={searchFields} properties={panelProperties} />
         </PopoverContent>
       </Popover>
     );

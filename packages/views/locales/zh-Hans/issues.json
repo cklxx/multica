@@ -226,6 +226,8 @@
     "advanced_or": "或",
     "advanced_add_condition": "添加条件",
     "advanced_add_group": "添加条件组",
+    "advanced_add_property": "添加属性筛选",
+    "advanced_properties_title": "属性筛选（在上述条件之外始终生效）",
     "advanced_values_placeholder": "选择值…",
     "advanced_field_label": "字段",
     "advanced_values_label": "值",

@@ -11,6 +11,7 @@ import type { IssueStatus, ProjectStatus, PropertyFilterValue } from "@multica/c
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import {
   advancedFilterUsesField,
+  statusColumnFilter,
   type AdvancedFilterGroup,
   type DueDateFilter,
 } from "@multica/core/issues/stores/filter-tree";
@@ -407,10 +408,14 @@ export function useIssueSurfaceData({
   // Columns follow the project's workflow, or Default outside a project.
   // (MUL-7420)
   const statusNegated = negatedFilters.includes("status");
+  const columnStatus = useMemo(
+    () => statusColumnFilter(statusFilters, statusNegated, advancedFilter, hiddenStatusKeys),
+    [advancedFilter, hiddenStatusKeys, statusFilters, statusNegated],
+  );
   const { workflow: projectWorkflow } = useColumnWorkflow(
     wsId,
     projectId,
-    statusFilters.length > 0 && !statusNegated,
+    columnStatus.statuses.length > 0 && !columnStatus.negated,
   );
   const { workflow: scopeWorkflow } = useColumnWorkflow(wsId, projectId, false);
 
@@ -418,14 +423,14 @@ export function useIssueSurfaceData({
     // An explicit exact-key filter wins over hidden column preferences.
     return workflowColumns(
       visibleStatusKeys(
-        statusFilters,
-        hiddenStatusKeys,
+        columnStatus.statuses,
+        columnStatus.hiddenStatuses,
         catalog,
-        statusNegated,
+        columnStatus.negated,
       ),
       projectWorkflow,
     );
-  }, [statusFilters, hiddenStatusKeys, catalog, projectWorkflow, statusNegated]);
+  }, [columnStatus, catalog, projectWorkflow]);
 
   // The columns Display can show or hide: this surface's workflow steps, or
   // the whole catalog without a workflow. A status filter does not change

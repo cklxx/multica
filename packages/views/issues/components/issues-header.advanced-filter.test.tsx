@@ -27,10 +27,13 @@ vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: () => null,
 }));
 
-function renderFilterMenu(setup?: (store: StoreApi<IssueViewState>) => void) {
+function renderFilterMenu(setup?: (store: StoreApi<IssueViewState>) => void, withProperty = false) {
   setApiInstance({
     listIssueStatuses: async () => ({ statuses: [], categories: [], total: 0 }),
-    listProperties: async () => ({ properties: [] }),
+    listProperties: async () => ({ properties: withProperty ? [{
+      id: "estimate", workspace_id: "ws-1", name: "Estimate", type: "number",
+      config: {}, position: 1, archived: false, created_at: "", updated_at: "",
+    }] : [] }),
     listMembers: async () => [],
     listAgents: async () => [
       { id: "agent-lambda", name: "Lambda", archived_at: null, owner_id: "u-1" },
@@ -93,6 +96,25 @@ describe("IssueFilterMenu search", () => {
 });
 
 describe("IssueFilterMenu advanced mode", () => {
+  it("shows property filters in the panel, and Clear all clears them too", async () => {
+    const store = renderFilterMenu((s) => {
+      s.getState().setPropertyFilterValues("estimate", ["3"]);
+      s.getState().togglePriorityFilter("urgent");
+    }, true);
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    expect(await screen.findByRole("menuitem", { name: /Estimate/ })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Switch to advanced filter/ }));
+    await screen.findByTestId("advanced-filter-panel");
+    expect(store.getState().propertyFilters).toEqual({ estimate: ["3"] });
+    expect(screen.getByTestId("advanced-property-row")).toHaveTextContent("Estimate");
+    expect(screen.getByRole("button", { name: "Add property filter" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+    expect(store.getState().advancedFilter?.children).toEqual([]);
+    expect(store.getState().propertyFilters).toEqual({});
+    expect(screen.queryByTestId("advanced-property-row")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
+  });
+
   it("switches to advanced with the current filters and opens the panel", async () => {
     const store = renderFilterMenu((s) => {
       s.getState().togglePriorityFilter("urgent");

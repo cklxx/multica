@@ -226,6 +226,8 @@
     "advanced_or": "または",
     "advanced_add_condition": "条件を追加",
     "advanced_add_group": "条件グループを追加",
+    "advanced_add_property": "プロパティフィルターを追加",
+    "advanced_properties_title": "プロパティフィルター（条件に加えて常に適用）",
     "advanced_values_placeholder": "値を選択…",
     "advanced_field_label": "フィールド",
     "advanced_values_label": "値",

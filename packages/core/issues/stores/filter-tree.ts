@@ -471,6 +471,52 @@ export function advancedFilterToTableQuery(
   return { match: pruned.match, children: pruned.children.map(convert) };
 }
 
+export interface StatusColumnFilter<S extends string = string> {
+  statuses: readonly string[];
+  negated: boolean;
+  hiddenStatuses: readonly S[];
+}
+
+/**
+ * The status selection that decides which columns a surface draws, given the
+ * simple status filter and the rule tree it is ANDed with.
+ *
+ * A status condition every row must meet (the root matches all, or it is the
+ * only rule) picks columns exactly like the simple filter. A looser tree can't
+ * narrow the columns, but a status it names positively still un-hides that
+ * column, so its rows have somewhere to land.
+ */
+export function statusColumnFilter<S extends string>(
+  statusFilters: readonly string[],
+  negated: boolean,
+  tree: AdvancedFilterGroup | null | undefined,
+  hiddenStatuses: readonly S[],
+): StatusColumnFilter<S> {
+  const pruned = statusFilters.length > 0 ? null : pruneAdvancedFilter(tree);
+  if (!pruned) return { statuses: statusFilters, negated, hiddenStatuses };
+  const required =
+    pruned.match === "all" || pruned.children.length === 1
+      ? pruned.children.filter(
+          (child): child is AdvancedFilterCondition => child.type === "condition" && child.field === "status",
+        )
+      : [];
+  const [only] = required;
+  if (only && required.length === 1) {
+    return { statuses: only.values, negated: only.negated, hiddenStatuses };
+  }
+  const named = new Set<string>();
+  const visit = (node: AdvancedFilterNode) => {
+    if (node.type === "group") node.children.forEach(visit);
+    else if (node.field === "status" && !node.negated) node.values.forEach((value) => named.add(value));
+  };
+  visit(pruned);
+  return {
+    statuses: [],
+    negated: false,
+    hiddenStatuses: named.size > 0 ? hiddenStatuses.filter((key) => !named.has(key)) : hiddenStatuses,
+  };
+}
+
 /** A tree's meaning without its ids, for comparing two trees. */
 export function advancedFilterSignature(group: AdvancedFilterGroup | null | undefined): string {
   const pruned = pruneAdvancedFilter(group);

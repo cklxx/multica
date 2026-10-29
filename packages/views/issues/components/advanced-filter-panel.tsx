@@ -51,7 +51,7 @@ export function stopMenuSearchKeys(event: React.KeyboardEvent) {
 
 type Catalog = (field: NegatableFilterDimension) => FilterValueOption[];
 
-const CONNECTOR_CLASS = "flex h-7 w-14 shrink-0 items-center text-caption text-muted-foreground";
+export const CONNECTOR_CLASS = "flex h-7 w-14 shrink-0 items-center text-caption text-muted-foreground";
 const ROW_SELECT_CLASS = "h-7 rounded-md text-caption";
 
 function FieldPickerMenu({
@@ -265,7 +265,7 @@ function ValuePicker({
   );
 }
 
-function RowActions({ children }: { children: ReactNode }) {
+export function RowActions({ children }: { children: ReactNode }) {
   const { t } = useT("issues");
   return (
     <DropdownMenu>
@@ -387,13 +387,22 @@ function ConditionRow({
   );
 }
 
-function AddButton({ children, ...props }: React.ComponentProps<typeof Button>) {
+export function AddButton({ children, ...props }: React.ComponentProps<typeof Button>) {
   return (
     <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-caption text-muted-foreground" {...props}>
       <Plus className="size-3.5" />
       {children}
     </Button>
   );
+}
+
+/** Custom-property filters stay outside the tree and are ANDed with it; the
+ *  caller renders them, since their editors belong to the simple menu. */
+export interface AdvancedPanelProperties {
+  rows: ReactNode;
+  addMenu: ReactNode;
+  active: boolean;
+  onClear: () => void;
 }
 
 /**
@@ -403,9 +412,11 @@ function AddButton({ children, ...props }: React.ComponentProps<typeof Button>) 
  */
 export function AdvancedFilterPanel({
   fields,
+  properties,
 }: {
   /** Fields the surface offers; a scope that fixes one leaves it out. */
   fields: readonly NegatableFilterDimension[];
+  properties?: AdvancedPanelProperties;
 }) {
   const { t } = useT("issues");
   const stored = useViewStore((s) => s.advancedFilter);
@@ -441,7 +452,7 @@ export function AdvancedFilterPanel({
       </div>
 
       <div className="flex max-h-[60vh] flex-col gap-1.5 overflow-y-auto px-3 py-1">
-        {root.children.length === 0 && (
+        {root.children.length === 0 && !properties?.active && (
           <p className="py-3 text-caption text-muted-foreground">{t(($) => $.filters.advanced_empty)}</p>
         )}
         {root.children.map((child, index) => (
@@ -495,6 +506,7 @@ export function AdvancedFilterPanel({
             )}
           </div>
         ))}
+        {properties?.active && properties.rows}
       </div>
 
       <div className="flex items-center gap-1 px-2 py-1.5">
@@ -514,6 +526,7 @@ export function AdvancedFilterPanel({
             )
           }
         />
+        {properties?.addMenu}
       </div>
 
       <div className="flex items-center gap-2 border-t border-border px-2 py-1.5">
@@ -535,8 +548,11 @@ export function AdvancedFilterPanel({
           variant="ghost"
           size="sm"
           className="ml-auto h-7 shrink-0 px-2 text-caption text-muted-foreground"
-          disabled={root.children.length === 0}
-          onClick={() => setAdvancedFilter(createFilterGroup(root.match))}
+          disabled={root.children.length === 0 && !properties?.active}
+          onClick={() => {
+            setAdvancedFilter(createFilterGroup(root.match));
+            properties?.onClear();
+          }}
         >
           {t(($) => $.filters.advanced_clear)}
         </Button>

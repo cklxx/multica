@@ -231,6 +231,8 @@
     "advanced_or": "ou",
     "advanced_add_condition": "Ajouter une condition",
     "advanced_add_group": "Ajouter un groupe de conditions",
+    "advanced_add_property": "Ajouter un filtre de propriété",
+    "advanced_properties_title": "Filtres de propriétés, toujours appliqués en plus des règles",
     "advanced_values_placeholder": "Choisir des valeurs…",
     "advanced_field_label": "Champ",
     "advanced_values_label": "Valeurs",

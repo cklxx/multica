@@ -1382,6 +1382,61 @@ describe("useIssueSurfaceController", () => {
     expect(result.current.columnStatuses).toContain("cancelled");
   });
 
+  it("keeps an explicitly selected hidden status column after switching to advanced", async () => {
+    mockListByStatus({
+      cancelled: [makeIssue({ id: "cancelled-1", status: "cancelled" })],
+    });
+    const store = getIssueSurfaceViewStore("project:p1");
+    store.getState().toggleStatusFilter("cancelled");
+    const { result } = renderHook(
+      () => useIssueSurfaceController({
+        scope: { type: "project", projectId: "p1" },
+        modes: ["list"],
+      }),
+      { wrapper: makeWrapper(qc, "project:p1") },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.visibleStatuses).toEqual(["cancelled"]);
+    expect(result.current.issues.map((issue) => issue.id)).toEqual(["cancelled-1"]);
+    act(() => store.getState().enterAdvancedFilter());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.tableQuerySpec.filters.advanced).toEqual({
+      match: "all", children: [{ field: "statuses", values: ["cancelled"] }],
+    });
+    expect(result.current.visibleStatuses).toContain("cancelled");
+    expect(result.current.issues.map((issue) => issue.id)).toEqual(["cancelled-1"]);
+  });
+
+  it("keeps server branch totals for the statuses a negated filter leaves", async () => {
+    const store = getIssueSurfaceViewStore("workspace");
+    store.getState().toggleStatusFilter("done");
+    store.getState().setFilterNegated("status", true);
+    listIssueTableRows.mockImplementation(async (request) => ({
+      query_fingerprint: "review",
+      group_key: request.group_key,
+      parent_id: null,
+      total: 120,
+      branch_total: request.group_key === "status:todo" ? 120 : 0,
+      rows: request.group_key === "status:todo"
+        ? Array.from({ length: 50 }, (_, index) => ({
+            issue: makeIssue({ id: `todo-${index}`, status: "todo" }), direct_child_count: 0,
+          }))
+        : [],
+      next_cursor: request.group_key === "status:todo" ? "more" : null,
+    }));
+    listIssueTableFacets.mockResolvedValue({
+      query_fingerprint: "review", total: 120,
+      facets: [{ kind: "status", values: [{ key: "todo", count: 120 }, { key: "done", count: 10 }] }],
+    });
+    const { result } = renderHook(
+      () => useIssueSurfaceController({ scope: { type: "workspace" }, modes: ["list"] }),
+      { wrapper: makeWrapper(qc, "workspace") },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.statusPagination?.todo.loaded).toBe(50);
+    expect(result.current.statusPagination?.todo.total).toBe(120);
+  });
+
   it("treats a cancelled-only filter like any other narrowing status filter", async () => {
     mockListByStatus({
       todo: [makeIssue({ id: "todo-1", status: "todo" })],

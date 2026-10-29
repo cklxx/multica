@@ -226,6 +226,8 @@
     "advanced_or": "或",
     "advanced_add_condition": "新增條件",
     "advanced_add_group": "新增條件組",
+    "advanced_add_property": "新增屬性篩選",
+    "advanced_properties_title": "屬性篩選（在上述條件之外始終生效）",
     "advanced_values_placeholder": "選擇值…",
     "advanced_field_label": "欄位",
     "advanced_values_label": "值",
